@@ -532,6 +532,8 @@ class DoMINODataPipe(Dataset):
         stl_vertices: torch.Tensor,
         stl_indices: torch.Tensor,
         volume_fields: torch.Tensor | None,
+        sdf_grid_cached: torch.Tensor | None = None,
+        grid_cached: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
         """
         Preprocess the volume data.
@@ -611,13 +613,19 @@ class DoMINODataPipe(Dataset):
         # because we need to use the (maybe) normalized volume coordinates and grid
         ########################################################################
 
-        # SDF calculation on the volume grid using WARP
-        sdf_grid, _ = signed_distance_field(
-            normed_vertices,
-            stl_indices,
-            grid,
-            use_sign_winding_number=True,
-        )
+        # SDF calculation on the volume grid using WARP.
+        # If a pre-computed sdf_grid is supplied (e.g. for inference where the
+        # geometry is fixed across batches), reuse it instead of recomputing.
+        if sdf_grid_cached is not None and grid_cached is not None:
+            sdf_grid = sdf_grid_cached
+            grid = grid_cached
+        else:
+            sdf_grid, _ = signed_distance_field(
+                normed_vertices,
+                stl_indices,
+                grid,
+                use_sign_winding_number=True,
+            )
 
         # Get the SDF of all the selected volume coordinates,
         # And keep the closest point to each one.
@@ -718,13 +726,20 @@ class DoMINODataPipe(Dataset):
         # For SDF calculations, make sure the mesh_indices_flattened is an integer array:
         mesh_indices_flattened = data_dict["stl_faces"].to(torch.int32)
 
-        # Compute signed distance function for the surface grid:
-        sdf_surf_grid, _ = signed_distance_field(
-            mesh_vertices=normed_vertices,
-            mesh_indices=mesh_indices_flattened,
-            input_points=surf_grid,
-            use_sign_winding_number=True,
-        )
+        # Compute signed distance function for the surface grid.
+        # If pre-computed values are supplied in data_dict (e.g. for inference
+        # where the geometry is fixed across batches), skip the expensive SDF
+        # computation and reuse the cached result instead.
+        if "sdf_surf_grid" in data_dict and "surf_grid" in data_dict:
+            sdf_surf_grid = data_dict["sdf_surf_grid"]
+            surf_grid = data_dict["surf_grid"]
+        else:
+            sdf_surf_grid, _ = signed_distance_field(
+                mesh_vertices=normed_vertices,
+                mesh_indices=mesh_indices_flattened,
+                input_points=surf_grid,
+                use_sign_winding_number=True,
+            )
         return_dict["sdf_surf_grid"] = sdf_surf_grid
         return_dict["surf_grid"] = surf_grid
 
@@ -738,10 +753,14 @@ class DoMINODataPipe(Dataset):
             data_dict["stl_centers"], data_dict["stl_areas"]
         )
 
-        # This will apply downsampling if needed to the geometry coordinates
-        geom_centers = self.downsample_geometry(
-            stl_vertices=data_dict["stl_coordinates"],
-        )
+        # This will apply downsampling if needed to the geometry coordinates.
+        # Use cached value if supplied (geometry doesn't change between batches).
+        if "geometry_coordinates" in data_dict:
+            geom_centers = data_dict["geometry_coordinates"]
+        else:
+            geom_centers = self.downsample_geometry(
+                stl_vertices=data_dict["stl_coordinates"],
+            )
         return_dict["geometry_coordinates"] = geom_centers
 
         ########################################################################
@@ -795,6 +814,8 @@ class DoMINODataPipe(Dataset):
                 stl_vertices=data_dict["stl_coordinates"],
                 stl_indices=mesh_indices_flattened,
                 volume_fields=volume_fields_raw,
+                sdf_grid_cached=data_dict.get("sdf_grid"),
+                grid_cached=data_dict.get("grid"),
             )
 
             return_dict.update(volume_dict)
@@ -955,7 +976,7 @@ class DoMINODataPipe(Dataset):
         if self.config.volume_sample_from_disk:
             # We deliberately double the data to read compared to the sampling size:
             self.dataset.set_volume_sampling_size(
-                100 * self.config.volume_points_sample
+                2 * self.config.volume_points_sample
             )
 
     def __len__(self):

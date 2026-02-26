@@ -92,13 +92,10 @@ def main(cfg: DictConfig) -> None:
         logger.info("Computing scaling factors from dataset...")
         start_time = time.perf_counter()
 
-        target_keys = [
-            "volume_fields",
-            "surface_fields",
-            "stl_centers",
-            "volume_mesh_centers",
-            "surface_mesh_centers",
-        ]
+        model_type = cfg.model.model_type
+        target_keys = ["stl_centers", "volume_mesh_centers", "volume_fields"]
+        if model_type in ("surface", "combined"):
+            target_keys += ["surface_fields", "surface_mesh_centers"]
 
         mean, std, min_val, max_val = compute_scaling_factors(
             cfg=cfg,

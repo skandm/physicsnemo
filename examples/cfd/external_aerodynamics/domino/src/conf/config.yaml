@@ -18,7 +18,7 @@
 # │            Project Details                │
 # └───────────────────────────────────────────┘  
 project: # Project name
-  name: DrivAerML_Dataset
+  name: RAF_CFD
   
 exp_tag: 1 # Experiment tag
 # Main output directory.
@@ -50,41 +50,40 @@ data_processor: # Data processor configurable parameters
 variables:
   surface:
     solution:
-      # The following is for AWS DrivAer dataset.
-      pMeanTrim: scalar
-      wallShearStressMeanTrim: vector
+      # Not used for volume-only training (model_type: volume).
+      p_surf: scalar
   volume:
     solution:
-      # The following is for AWS DrivAer dataset.
-      UMeanTrim: vector
-      pMeanTrim: scalar
-      nutMeanTrim: scalar
+      # Column order must match the column order written by convert_to_zarr.py:
+      #   0-2: Velocity time-averaged (vector), 3: Pressure time-averaged (scalar)
+      U_time_avg: vector   # columns 0, 1, 2
+      p_time_avg: scalar   # column 3
   global_parameters:
     inlet_velocity:
       type: vector
-      reference: [30.00] # vector [30, 0, 0] should be specified as [30], while [30, 30, 0] should be [30, 30].
+      reference: [170.0] # Mach 0.5 at sea level (~340 m/s * 0.5)
     air_density:
       type: scalar
-      reference: 1.205
+      reference: 1.225   # kg/m3 at sea level
 
 # ┌───────────────────────────────────────────┐
 # │         Data Configs                      │
 # └───────────────────────────────────────────┘  
 data: # Input directory for training and validation data
-  input_dir: /user/data/aws_data_all/
-  input_dir_val: /user/data/aws_data_all_val/
-  bounding_box: # Bounding box dimensions for computational domain
-    min: [-3.5, -2.25, -0.32]
-    max: [8.5, 2.25, 3.00]
-  bounding_box_surface: # Bounding box dimensions for car surface
-    min: [-1.5, -1.4, -0.32]
-    max: [5.0, 1.4, 1.4]
+  input_dir: /home/skandmishra/raf_test/zarr_train
+  input_dir_val: /home/skandmishra/raf_test/zarr_val
+  bounding_box: # Bounding box of the CFD volume domain (meters)
+    min: [-2.0, -3.7, -2.7]
+    max: [7.2,  3.5,  2.3]
+  bounding_box_surface: # Bounding box of the aircraft surface (meters)
+    min: [-0.1, -1.6, -0.2]
+    max: [2.5,  1.6,  0.5]
   gpu_preprocessing: true
   gpu_output: true
   normalize_coordinates: true
   sample_in_bbox: true
   sampling: true
-  scaling_factors: ${project_dir}/scaling_factors/scaling_factors.pkl
+  scaling_factors: /home/skandmishra/raf_test/scaling_factors/scaling_factors.pkl
   volume_sample_from_disk: true
   max_samples_for_statistics: 200
 
@@ -100,17 +99,17 @@ domain_parallelism:
 # │          Model Parameters                 │
 # └───────────────────────────────────────────┘  
 model:
-  model_type: combined # train which model? surface, volume, combined
+  model_type: volume # train which model? surface, volume, combined
   activation: "gelu" # "relu" or "gelu"
-  loss_function: 
+  loss_function:
     loss_type: "mse" # mse or rmse
-    area_weighing_factor: 10000 # Generally inverse of maximum area
+    area_weighing_factor: 100 # Generally inverse of maximum area (max STL face area ~0.012–0.017 m² → 1/0.012 ≈ 83)
   interp_res: [128, 64, 64] # resolution of latent space 128, 64, 48
   use_sdf_in_basis_func: true # SDF in basis function network
   volume_points_sample: 8192 # Number of points to sample in volume per epoch
   surface_points_sample: 8192 # Number of points to sample on surface per epoch
   surface_sampling_algorithm: area_weighted #random or area_weighted
-  geom_points_sample: 300_000 # Number of points to sample on STL per epoch
+  geom_points_sample: 50_000 # Number of points to sample on STL per epoch
   num_neighbors_surface: 7 # How many neighbors on surface?
   num_neighbors_volume: 10 # How many neighbors on volume?
   combine_volume_surface: false # combine volume and surface encodings
@@ -182,7 +181,7 @@ train: # Training configurable parameters
   dataloader:
     batch_size: 1
     preload_depth: 1
-    pin_memory: True # if the preprocessing is outputting GPU data, set this to false
+    pin_memory: false # gpu_output: true means data is already on GPU — pin_memory must be false
   sampler:
     shuffle: true
     drop_last: false
@@ -216,7 +215,7 @@ val: # Validation configurable parameters
   dataloader:
     batch_size: 1
     preload_depth: 1
-    pin_memory: true # if the preprocessing is outputting GPU data, set this to false
+    pin_memory: false # gpu_output: true means data is already on GPU — pin_memory must be false
   sampler:
     shuffle: true
     drop_last: false

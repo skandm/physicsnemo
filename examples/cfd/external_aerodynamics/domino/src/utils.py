@@ -342,12 +342,15 @@ def load_scaling_factors(
                 scaling_factors.min_val["volume_fields"],
             ]
         )
-        surf_factors = np.asarray(
-            [
-                scaling_factors.max_val["surface_fields"],
-                scaling_factors.min_val["surface_fields"],
-            ]
-        )
+        if "surface_fields" in scaling_factors.max_val:
+            surf_factors = np.asarray(
+                [
+                    scaling_factors.max_val["surface_fields"],
+                    scaling_factors.min_val["surface_fields"],
+                ]
+            )
+        else:
+            surf_factors = None
     elif cfg.model.normalization == "mean_std_scaling":
         vol_factors = np.asarray(
             [
@@ -355,21 +358,27 @@ def load_scaling_factors(
                 scaling_factors.std["volume_fields"],
             ]
         )
-        surf_factors = np.asarray(
-            [
-                scaling_factors.mean["surface_fields"],
-                scaling_factors.std["surface_fields"],
-            ]
-        )
+        if "surface_fields" in scaling_factors.mean:
+            surf_factors = np.asarray(
+                [
+                    scaling_factors.mean["surface_fields"],
+                    scaling_factors.std["surface_fields"],
+                ]
+            )
+        else:
+            surf_factors = None
     else:
         raise ValueError(f"Invalid normalization mode: {cfg.model.normalization}")
 
     vol_factors_tensor = torch.from_numpy(vol_factors)
-    surf_factors_tensor = torch.from_numpy(surf_factors)
 
     dm = DistributedManager()
     vol_factors_tensor = vol_factors_tensor.to(dm.device, dtype=torch.float32)
-    surf_factors_tensor = surf_factors_tensor.to(dm.device, dtype=torch.float32)
+
+    if surf_factors is not None:
+        surf_factors_tensor = torch.from_numpy(surf_factors).to(dm.device, dtype=torch.float32)
+    else:
+        surf_factors_tensor = None
 
     return vol_factors_tensor, surf_factors_tensor
 
@@ -458,13 +467,18 @@ def metrics_fn_volume(
 
     l2 = l2_num / l2_denom
 
-    metrics = {
-        "l2_vol_pressure": torch.mean(l2[:, 3]),
-        "l2_velocity_x": torch.mean(l2[:, 0]),
-        "l2_velocity_y": torch.mean(l2[:, 1]),
-        "l2_velocity_z": torch.mean(l2[:, 2]),
-        "l2_nut": torch.mean(l2[:, 4]),
-    }
+    num_channels = l2.shape[1]
+    metrics = {}
+    if num_channels > 0:
+        metrics["l2_velocity_x"] = torch.mean(l2[:, 0])
+    if num_channels > 1:
+        metrics["l2_velocity_y"] = torch.mean(l2[:, 1])
+    if num_channels > 2:
+        metrics["l2_velocity_z"] = torch.mean(l2[:, 2])
+    if num_channels > 3:
+        metrics["l2_vol_pressure"] = torch.mean(l2[:, 3])
+    if num_channels > 4:
+        metrics["l2_nut"] = torch.mean(l2[:, 4])
 
     return metrics
 
