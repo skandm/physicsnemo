@@ -17,23 +17,24 @@
 """
 Split a directory of .zarr cases into train and validation sets.
 
-Cases are sorted numerically by name and every Nth case (default: every 5th)
-is assigned to the validation set; the remainder go to train.
+By default every 5th case (sorted order) goes to val. Use --random to
+shuffle before splitting, and --val_pct to control the fraction.
 
 Usage:
-    python split_zarr.py --zarr_dir /data/my_dataset/zarr
+    python split_zarr.py --zarr_dir /data/zarr
+
+    # 20% val, random shuffle, reproducible:
+    python split_zarr.py --zarr_dir /data/zarr --val_pct 0.2 --random --seed 42
 
     # Custom output directories:
     python split_zarr.py --zarr_dir /data/zarr --train_dir /data/train --val_dir /data/val
 
-    # Change split ratio (every 10th case goes to val):
-    python split_zarr.py --zarr_dir /data/zarr --val_every 10
-
-    # Dry-run to preview the split without moving any files:
+    # Preview without moving files:
     python split_zarr.py --zarr_dir /data/zarr --dry_run
 """
 
 import argparse
+import random
 import shutil
 from pathlib import Path
 
@@ -42,7 +43,9 @@ def split_zarr(
     zarr_dir: Path,
     train_dir: Path,
     val_dir: Path,
-    val_every: int = 5,
+    val_pct: float = 0.2,
+    randomize: bool = False,
+    seed: int = 42,
     dry_run: bool = False,
 ) -> None:
     """
@@ -52,7 +55,9 @@ def split_zarr(
         zarr_dir:  Source directory containing <case_id>.zarr folders.
         train_dir: Destination for training cases.
         val_dir:   Destination for validation cases.
-        val_every: Every Nth case (by sorted order) goes to val.
+        val_pct:   Fraction of cases assigned to val (default: 0.2 = 20%).
+        randomize: If True, shuffle cases before splitting.
+        seed:      Random seed for reproducibility (only used when randomize=True).
         dry_run:   If True, only print what would happen without moving files.
     """
     cases = sorted(
@@ -66,11 +71,17 @@ def split_zarr(
 
     print(f"Found {len(cases)} total cases")
 
-    train_cases = [c for i, c in enumerate(cases) if i % val_every != 0]
-    val_cases   = [c for i, c in enumerate(cases) if i % val_every == 0]
+    if randomize:
+        rng = random.Random(seed)
+        rng.shuffle(cases)
+        print(f"Shuffled with seed={seed}")
 
-    print(f"Train: {len(train_cases)} cases")
-    print(f"Val:   {len(val_cases)} cases  (every {val_every}th case)")
+    n_val = max(1, round(len(cases) * val_pct))
+    val_cases   = cases[:n_val]
+    train_cases = cases[n_val:]
+
+    print(f"Train: {len(train_cases)} cases  ({100 - val_pct*100:.0f}%)")
+    print(f"Val:   {len(val_cases)} cases  ({val_pct*100:.0f}%)")
     print(f"Val cases: {[c.name for c in val_cases]}")
 
     if dry_run:
@@ -124,10 +135,21 @@ if __name__ == "__main__":
         help="Destination for validation cases (default: <zarr_dir>/../zarr_val)",
     )
     parser.add_argument(
-        "--val_every",
+        "--val_pct",
+        type=float,
+        default=0.2,
+        help="Fraction of cases assigned to val, e.g. 0.2 for 20%% (default: 0.2)",
+    )
+    parser.add_argument(
+        "--random",
+        action="store_true",
+        help="Shuffle cases randomly before splitting",
+    )
+    parser.add_argument(
+        "--seed",
         type=int,
-        default=5,
-        help="Every Nth case (by sorted order) is assigned to val (default: 5)",
+        default=42,
+        help="Random seed for reproducibility (default: 42, only used with --random)",
     )
     parser.add_argument(
         "--dry_run",
@@ -136,7 +158,7 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    zarr_dir = Path(args.zarr_dir)
+    zarr_dir  = Path(args.zarr_dir)
     train_dir = Path(args.train_dir) if args.train_dir else zarr_dir.parent / "zarr_train"
     val_dir   = Path(args.val_dir)   if args.val_dir   else zarr_dir.parent / "zarr_val"
 
@@ -144,6 +166,8 @@ if __name__ == "__main__":
         zarr_dir=zarr_dir,
         train_dir=train_dir,
         val_dir=val_dir,
-        val_every=args.val_every,
+        val_pct=args.val_pct,
+        randomize=args.random,
+        seed=args.seed,
         dry_run=args.dry_run,
     )
