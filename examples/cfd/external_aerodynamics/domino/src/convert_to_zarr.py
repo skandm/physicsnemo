@@ -49,8 +49,8 @@ import zarr
 from pathlib import Path
 
 # ── Input / output directories ────────────────────────────────────────────────
-INPUT_DIR  = Path("D:/Downloads/raf_test/data")   # parent folder containing 0/, 1/, 2/ ...
-OUTPUT_DIR = Path("D:/Downloads/raf_test/zarr")   # where .zarr files will be written
+INPUT_DIR  = Path("/mnt/d/Downloads/raf_test/data")   # parent folder containing 0/, 1/, 2/ ...
+OUTPUT_DIR = Path("/mnt/d/Downloads/raf_test/zarr")   # where .zarr files will be written
 
 # ── File names inside each case folder ────────────────────────────────────────
 STL_FILENAME = "mesh.stl"
