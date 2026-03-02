@@ -631,6 +631,7 @@ def save_vti_direct(
     bbox_min: np.ndarray,
     bbox_max: np.ndarray,
     resolution: tuple[int, int, int],
+    output_names: dict[str, str] | None = None,
 ):
     """
     Save model predictions evaluated directly on a regular grid as VTI.
@@ -639,6 +640,17 @@ def save_vti_direct(
     Interior cells (inside the solid geometry) have been left as zero.
 
     VTI fully supports ParaView slice, threshold, volume rendering, streamlines.
+
+    Args:
+        variable_names: Per-column names as built from config (e.g. ``['U_time_avg_x',
+                        'U_time_avg_y', 'U_time_avg_z', 'p_time_avg']``).  Consecutive
+                        ``_x / _y / _z`` triplets are automatically stacked into a single
+                        3-component vector array so ParaView can display streamlines and
+                        glyphs without an extra ``Calculator`` step.
+        output_names:   Optional mapping from the base variable name (the part before
+                        ``_x/_y/_z`` for vectors, or the plain name for scalars) to the
+                        desired array name in the output file.
+                        Example: ``{'U_time_avg': 'velocity', 'p_time_avg': 'pressure'}``
     """
     try:
         import pyvista as pv
@@ -657,13 +669,27 @@ def save_vti_direct(
     grid.origin  = (float(bbox_min[0]), float(bbox_min[1]), float(bbox_min[2]))
     grid.spacing = (float(dx), float(dy), float(dz))
 
-    for col, name in enumerate(variable_names):
-        grid.cell_data[name] = preds_flat[:, col].astype(np.float32)
+    rename = output_names or {}
 
-    if preds_flat.shape[1] >= 3:
-        grid.cell_data["velocity_magnitude"] = np.linalg.norm(
-            preds_flat[:, :3], axis=1
-        ).astype(np.float32)
+    # Walk variable_names, grouping consecutive _x/_y/_z triplets into vectors.
+    i = 0
+    while i < len(variable_names):
+        name = variable_names[i]
+        if (
+            name.endswith("_x")
+            and i + 2 < len(variable_names)
+            and variable_names[i + 1] == name[:-1] + "y"
+            and variable_names[i + 2] == name[:-1] + "z"
+        ):
+            base = name[:-2]  # strip "_x"
+            out_name = rename.get(base, base)
+            vec = preds_flat[:, i : i + 3].astype(np.float32)
+            grid.cell_data[out_name] = vec  # [N, 3] — ParaView treats as vector
+            i += 3
+        else:
+            out_name = rename.get(name, name)
+            grid.cell_data[out_name] = preds_flat[:, i].astype(np.float32)
+            i += 1
 
     grid.save(output_path)
     print(f"Saved {nx}×{ny}×{nz} VTI to: {output_path}")
@@ -1022,15 +1048,25 @@ def main():
     model.eval()
 
     # -----------------------------------------------------------------------
-    # Determine output variable names
+    # Determine output variable names and canonical rename map
     # -----------------------------------------------------------------------
     channel_names = []
+    vti_output_names: dict[str, str] = {}
+    _first_vector = True
+    _first_scalar = True
     for var_name, var_type in cfg.variables.volume.solution.items():
         if var_type == "vector":
             channel_names += [f"{var_name}_x", f"{var_name}_y", f"{var_name}_z"]
+            if _first_vector:
+                vti_output_names[var_name] = "velocity"
+                _first_vector = False
         else:
             channel_names.append(var_name)
+            if _first_scalar:
+                vti_output_names[var_name] = "pressure"
+                _first_scalar = False
     logger.info(f"         Output channels: {channel_names}")
+    logger.info(f"         VTI rename map:  {vti_output_names}")
 
     # -----------------------------------------------------------------------
     # Run inference
@@ -1073,6 +1109,7 @@ def main():
             preds_flat, args.output, channel_names,
             bbox_min=bbox_min, bbox_max=bbox_max,
             resolution=vti_res,
+            output_names=vti_output_names,
         )
     else:
         # --- Scatter mode: random point sampling → VTU/VTP ---
