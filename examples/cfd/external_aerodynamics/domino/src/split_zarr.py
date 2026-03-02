@@ -29,8 +29,6 @@ Usage:
     # Custom output directories:
     python split_zarr.py --zarr_dir /data/zarr --train_dir /data/train --val_dir /data/val
 
-    # Preview without moving files:
-    python split_zarr.py --zarr_dir /data/zarr --dry_run
 """
 
 import argparse
@@ -46,7 +44,6 @@ def split_zarr(
     val_pct: float = 0.2,
     randomize: bool = False,
     seed: int = 42,
-    dry_run: bool = False,
 ) -> None:
     """
     Move zarr cases from zarr_dir into train_dir and val_dir.
@@ -58,7 +55,6 @@ def split_zarr(
         val_pct:   Fraction of cases assigned to val (default: 0.2 = 20%).
         randomize: If True, shuffle cases before splitting.
         seed:      Random seed for reproducibility (only used when randomize=True).
-        dry_run:   If True, only print what would happen without moving files.
     """
     cases = sorted(
         [d for d in zarr_dir.iterdir() if d.is_dir() and d.name.endswith(".zarr")],
@@ -83,10 +79,6 @@ def split_zarr(
     print(f"Train: {len(train_cases)} cases  ({100 - val_pct*100:.0f}%)")
     print(f"Val:   {len(val_cases)} cases  ({val_pct*100:.0f}%)")
     print(f"Val cases: {[c.name for c in val_cases]}")
-
-    if dry_run:
-        print("\n[DRY RUN] No files were moved.")
-        return
 
     train_dir.mkdir(parents=True, exist_ok=True)
     val_dir.mkdir(parents=True, exist_ok=True)
@@ -151,11 +143,6 @@ if __name__ == "__main__":
         default=42,
         help="Random seed for reproducibility (default: 42, only used with --random)",
     )
-    parser.add_argument(
-        "--dry_run",
-        action="store_true",
-        help="Preview the split without moving any files",
-    )
     args = parser.parse_args()
 
     zarr_dir  = Path(args.zarr_dir)
@@ -169,5 +156,4 @@ if __name__ == "__main__":
         val_pct=args.val_pct,
         randomize=args.random,
         seed=args.seed,
-        dry_run=args.dry_run,
     )
