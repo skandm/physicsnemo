@@ -103,7 +103,7 @@ model:
   activation: "gelu" # "relu" or "gelu"
   loss_function:
     loss_type: "mse" # mse or rmse
-    area_weighing_factor: 100 # Generally inverse of maximum area (max STL face area ~0.012–0.017 m² → 1/0.012 ≈ 83)
+    area_weighing_factor: 54 # Generally inverse of maximum area (max STL face area ~0.012–0.017 m² → 1/0.012 ≈ 83)
   interp_res: [128, 64, 64] # resolution of latent space 128, 64, 48
   use_sdf_in_basis_func: true # SDF in basis function network
   volume_points_sample: 8192 # Number of points to sample in volume per epoch
