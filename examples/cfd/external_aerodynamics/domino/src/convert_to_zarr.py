@@ -34,13 +34,12 @@ Each case produces one output file:
         ...
 
 Usage:
-    Step 1 - Discover available fields in your VTI:
-        Set DISCOVER_FIELDS = True and run the script.
-        It will print all fields from the first case and exit.
-
-    Step 2 - Set your fields and run conversion:
-        Set DISCOVER_FIELDS = False, fill in VOLUME_FIELD_NAMES,
-        and run again to convert all cases.
+    1. Set INPUT_DIR, OUTPUT_DIR, and the other constants below.
+    2. Leave VOLUME_FIELD_NAMES = {} on the first run.
+       The script will print all available fields from your VTI and exit.
+    3. Fill in VOLUME_FIELD_NAMES with the names printed in step 2 and run again.
+       If a field name is wrong the script will error immediately and show
+       the correct names.
 """
 
 import sys
@@ -48,9 +47,6 @@ import numpy as np
 import pyvista as pv
 import zarr
 from pathlib import Path
-
-# ── Step 1: Set to True first to inspect your VTI fields ──────────────────────
-DISCOVER_FIELDS = False
 
 # ── Input / output directories ────────────────────────────────────────────────
 INPUT_DIR  = Path("D:/Downloads/raf_test/data")   # parent folder containing 0/, 1/, 2/ ...
@@ -60,10 +56,10 @@ OUTPUT_DIR = Path("D:/Downloads/raf_test/zarr")   # where .zarr files will be wr
 STL_FILENAME = "mesh.stl"
 VTI_FILENAME = "result.vti"
 
-# ── Step 2: Fill these in after running discovery ─────────────────────────────
+# ── VTI field names → leave empty {} to auto-discover ────────────────────────
 # Map from VTI field name → "vector" or "scalar"
 # Order here determines column order in volume_fields — must match config.yaml
-# Example (edit to match your actual field names):
+# Leave as {} on the first run: the script will print available field names and exit.
 VOLUME_FIELD_NAMES = {
     "Velocity time-averaged": "vector",   # columns 0, 1, 2
     "Pressure time-averaged": "scalar",   # column 3
@@ -113,8 +109,6 @@ def discover_fields(input_dir: Path):
 
     print(f"Type:       {type(mesh).__name__}")
     print(f"Dimensions: {mesh.dimensions}")
-    print(f"Spacing:    {mesh.spacing}")
-    print(f"Origin:     {mesh.origin}")
     print(f"N points:   {mesh.n_points}")
     print(f"N cells:    {mesh.n_cells}")
 
@@ -135,10 +129,20 @@ def discover_fields(input_dir: Path):
         print(f"  N faces:    {stl.n_cells}")
         print(f"  Bounds:     {stl.bounds}")
 
+    # Print a ready-to-paste VOLUME_FIELD_NAMES template
+    all_fields = {
+        **{n: mesh.cell_data[n] for n in mesh.cell_data.keys()},
+        **{n: mesh.point_data[n] for n in mesh.point_data.keys()},
+    }
+    print("\n── Suggested VOLUME_FIELD_NAMES (edit kind: vector/scalar as needed) ──")
+    print("VOLUME_FIELD_NAMES = {")
+    for name, arr in all_fields.items():
+        kind = "vector" if (arr.ndim == 2 and arr.shape[1] == 3) else "scalar"
+        print(f'    "{name}": "{kind}",')
+    print("}")
     print(
-        "\nSet DISCOVER_FIELDS = False in the script, "
-        "fill in VOLUME_FIELD_NAMES with the fields you want, "
-        "and run again to convert all cases."
+        "\nFill in VOLUME_FIELD_NAMES above with the fields you want, "
+        "then run again to convert all cases."
     )
 
 
@@ -286,17 +290,15 @@ def convert_case(
 # ──────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    if DISCOVER_FIELDS:
-        discover_fields(INPUT_DIR)
-        sys.exit(0)
-
-    # Validate config before running
     if not INPUT_DIR.exists():
         print(f"ERROR: INPUT_DIR does not exist: {INPUT_DIR}")
         sys.exit(1)
+
+    # Auto-discover fields if VOLUME_FIELD_NAMES is empty
     if not VOLUME_FIELD_NAMES:
-        print("ERROR: VOLUME_FIELD_NAMES is empty — fill it in after running discovery")
-        sys.exit(1)
+        print("VOLUME_FIELD_NAMES is empty — discovering available fields ...\n")
+        discover_fields(INPUT_DIR)
+        sys.exit(0)
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
