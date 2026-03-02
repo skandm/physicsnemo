@@ -650,7 +650,8 @@ def save_vti_direct(
         output_names:   Optional mapping from the base variable name (the part before
                         ``_x/_y/_z`` for vectors, or the plain name for scalars) to the
                         desired array name in the output file.
-                        Example: ``{'U_time_avg': 'velocity', 'p_time_avg': 'pressure'}``
+                        Example: ``{'U_time_avg': 'velocity_time_avg',
+                                    'p_time_avg': 'pressure_time_avg'}``
     """
     try:
         import pyvista as pv
@@ -690,6 +691,15 @@ def save_vti_direct(
             out_name = rename.get(name, name)
             grid.cell_data[out_name] = preds_flat[:, i].astype(np.float32)
             i += 1
+
+    # ImplicitField: scalar sentinel filled with -1.0, used by downstream tools
+    # to identify the fluid domain (interior solid cells remain at their zero
+    # prediction values and can be masked by this field).
+    grid.cell_data["ImplicitField"] = np.full(nx * ny * nz, -1.0, dtype=np.float32)
+
+    # Convert cell data to point data so ParaView can interpolate smoothly
+    # across voxel boundaries (required for streamlines, smooth iso-surfaces, etc.).
+    grid = grid.cell_data_to_point_data(pass_cell_data=False)
 
     grid.save(output_path)
     print(f"Saved {nx}×{ny}×{nz} VTI to: {output_path}")
@@ -1058,12 +1068,12 @@ def main():
         if var_type == "vector":
             channel_names += [f"{var_name}_x", f"{var_name}_y", f"{var_name}_z"]
             if _first_vector:
-                vti_output_names[var_name] = "velocity"
+                vti_output_names[var_name] = "velocity_time_avg"
                 _first_vector = False
         else:
             channel_names.append(var_name)
             if _first_scalar:
-                vti_output_names[var_name] = "pressure"
+                vti_output_names[var_name] = "pressure_time_avg"
                 _first_scalar = False
     logger.info(f"         Output channels: {channel_names}")
     logger.info(f"         VTI rename map:  {vti_output_names}")
