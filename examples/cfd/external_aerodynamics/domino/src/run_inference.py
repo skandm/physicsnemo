@@ -577,7 +577,14 @@ def run_inference_grid(
         preds_all    = np.concatenate(all_batch_preds, axis=0)
         preds_flat[flat_idx_all] = preds_all
     else:
-        preds_flat = np.zeros((total_cells, 1), dtype=np.float32)
+        raise RuntimeError(
+            "No exterior cells found — all grid points were classified as inside the solid.\n"
+            "This usually means the STL geometry does not overlap with the bounding box\n"
+            "defined in config.yaml (data.bounding_box), or the STL normals are inverted.\n"
+            "Run check_bounds.py on your zarr data to verify the expected bounding box,\n"
+            "and compare against the STL coordinates with:\n"
+            "  python check_coords.py --stl <path/to/mesh.stl>"
+        )
 
     return preds_flat, bbox_min, bbox_max, (dx, dy, dz)
 
@@ -766,6 +773,15 @@ def parse_args():
         "--stl",
         required=True,
         help="Path to input STL file (aircraft geometry)",
+    )
+    p.add_argument(
+        "--stl_scale",
+        type=float,
+        default=1.0,
+        help=(
+            "Multiply all STL coordinates by this factor before inference. "
+            "Use 0.001 to convert millimetres → metres (default: 1.0)."
+        ),
     )
     p.add_argument(
         "--checkpoint",
@@ -959,6 +975,9 @@ def main():
     # -----------------------------------------------------------------------
     _step(logger, 3, N_STEPS, f"Loading STL: {args.stl}")
     stl_coordinates, stl_faces = load_stl_to_tensors(args.stl, device)
+    if args.stl_scale != 1.0:
+        stl_coordinates = stl_coordinates * args.stl_scale
+        logger.info(f"         Scaled STL coordinates by {args.stl_scale} (unit conversion)")
     stl_min = stl_coordinates.min(dim=0).values.cpu().tolist()
     stl_max = stl_coordinates.max(dim=0).values.cpu().tolist()
     logger.info(
