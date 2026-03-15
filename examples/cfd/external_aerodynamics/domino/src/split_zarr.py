@@ -17,40 +17,48 @@
 """
 Split a directory of .zarr cases into train and validation sets.
 
+Validation cases are moved out of zarr_dir into a separate val directory.
+zarr_dir itself becomes the training directory — no data is copied for train.
+
 By default every 5th case (sorted order) goes to val. Use --random to
 shuffle before splitting, and --val_pct to control the fraction.
 
 Usage:
     python split_zarr.py --zarr_dir /data/zarr
 
+    # Custom val directory:
+    python split_zarr.py --zarr_dir /data/zarr --val_dir /data/zarr_val
+
     # 20% val, random shuffle, reproducible:
     python split_zarr.py --zarr_dir /data/zarr --val_pct 0.2 --random --seed 42
 
-    # Custom output directories:
-    python split_zarr.py --zarr_dir /data/zarr --train_dir /data/train --val_dir /data/val
-
+After running, set in config.yaml:
+    data:
+      input_dir:     /data/zarr       # unchanged, now train-only
+      input_dir_val: /data/zarr_val
 """
 
 import argparse
+import os
 import random
 import shutil
+import subprocess
 from pathlib import Path
 
 
 def split_zarr(
     zarr_dir: Path,
-    train_dir: Path,
     val_dir: Path,
     val_pct: float = 0.2,
     randomize: bool = False,
     seed: int = 42,
 ) -> None:
     """
-    Move zarr cases from zarr_dir into train_dir and val_dir.
+    Move val cases out of zarr_dir into val_dir.
+    zarr_dir is left in place as the training directory.
 
     Args:
-        zarr_dir:  Source directory containing <case_id>.zarr folders.
-        train_dir: Destination for training cases.
+        zarr_dir:  Directory containing all <case_id>.zarr folders.
         val_dir:   Destination for validation cases.
         val_pct:   Fraction of cases assigned to val (default: 0.2 = 20%).
         randomize: If True, shuffle cases before splitting.
@@ -73,52 +81,44 @@ def split_zarr(
         print(f"Shuffled with seed={seed}")
 
     n_val = max(1, round(len(cases) * val_pct))
-    val_cases   = cases[:n_val]
-    train_cases = cases[n_val:]
+    val_cases = cases[:n_val]
 
-    print(f"Train: {len(train_cases)} cases  ({100 - val_pct*100:.0f}%)")
-    print(f"Val:   {len(val_cases)} cases  ({val_pct*100:.0f}%)")
+    print(f"Train: {len(cases) - n_val} cases  ({100*(1-val_pct):.0f}%)")
+    print(f"Val:   {n_val} cases  ({100*val_pct:.0f}%)")
     print(f"Val cases: {[c.name for c in val_cases]}")
 
-    train_dir.mkdir(parents=True, exist_ok=True)
     val_dir.mkdir(parents=True, exist_ok=True)
-
-    for case in train_cases:
-        dst = train_dir / case.name
-        if not dst.exists():
-            shutil.move(str(case), str(dst))
-            print(f"  TRAIN <- {case.name}")
-        else:
-            print(f"  SKIP (exists): {case.name}")
 
     for case in val_cases:
         dst = val_dir / case.name
-        if not dst.exists():
-            shutil.move(str(case), str(dst))
-            print(f"  VAL   <- {case.name}")
-        else:
+        if dst.exists():
             print(f"  SKIP (exists): {case.name}")
+            continue
+        try:
+            os.rename(case, dst)
+        except OSError:
+            print(
+                f"  WARNING: cannot rename {case.name} — falling back to cp -r "
+                "(slow for large datasets)."
+            )
+            subprocess.run(["cp", "-r", str(case), str(dst)], check=True)
+            shutil.rmtree(str(case))
+        print(f"  VAL <- {case.name}")
 
-    n_train = len(list(train_dir.iterdir()))
-    n_val   = len(list(val_dir.iterdir()))
-    print(f"\nDone. Train: {n_train} | Val: {n_val}")
+    print(f"\nDone.")
+    print(f"  input_dir:     {zarr_dir}")
+    print(f"  input_dir_val: {val_dir}")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Split zarr cases into train and validation directories."
+        description="Move val cases out of zarr_dir into a separate val directory."
     )
     parser.add_argument(
         "--zarr_dir",
         type=str,
         required=True,
-        help="Source directory containing <case_id>.zarr folders",
-    )
-    parser.add_argument(
-        "--train_dir",
-        type=str,
-        default=None,
-        help="Destination for training cases (default: <zarr_dir>/../zarr_train)",
+        help="Directory containing all .zarr case folders (becomes train dir)",
     )
     parser.add_argument(
         "--val_dir",
@@ -130,7 +130,7 @@ if __name__ == "__main__":
         "--val_pct",
         type=float,
         default=0.2,
-        help="Fraction of cases assigned to val, e.g. 0.2 for 20%% (default: 0.2)",
+        help="Fraction of cases assigned to val (default: 0.2)",
     )
     parser.add_argument(
         "--random",
@@ -145,15 +145,14 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    zarr_dir  = Path(args.zarr_dir)
-    train_dir = Path(args.train_dir) if args.train_dir else zarr_dir.parent / "zarr_train"
-    val_dir   = Path(args.val_dir)   if args.val_dir   else zarr_dir.parent / "zarr_val"
+    zarr_dir = Path(args.zarr_dir)
+    val_dir  = Path(args.val_dir) if args.val_dir else zarr_dir.parent / "zarr_val"
 
     split_zarr(
         zarr_dir=zarr_dir,
-        train_dir=train_dir,
         val_dir=val_dir,
         val_pct=args.val_pct,
         randomize=args.random,
         seed=args.seed,
     )
+

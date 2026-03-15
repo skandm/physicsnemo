@@ -49,12 +49,12 @@ import zarr
 from pathlib import Path
 
 # ── Input / output directories ────────────────────────────────────────────────
-INPUT_DIR  = Path("/mnt/d/Downloads/raf_test/data")   # parent folder containing 0/, 1/, 2/ ...
-OUTPUT_DIR = Path("/mnt/d/Downloads/raf_test/zarr")   # where .zarr files will be written
+INPUT_DIR  = Path("/home/user/gcs/gaandeev_ntop/Task2_Files_DoE_pipeline/test/raf/data")   # parent folder containing 0/, 1/, 2/ ...
+OUTPUT_DIR = Path("/home/user/gcs/gaandeev_ntop/Task2_Files_DoE_pipeline/test/zarr_data")   # where .zarr files will be written
 
 # ── File names inside each case folder ────────────────────────────────────────
 STL_FILENAME = "mesh.stl"
-VTI_FILENAME = "result.vti"
+VTI_FILENAME = "cfdAnalysis.vti"
 
 # ── VTI field names → leave empty {} to auto-discover ────────────────────────
 # Map from VTI field name → "vector" or "scalar"
@@ -79,7 +79,7 @@ INLET_VELOCITY = 170.0   # m/s  — Mach 0.5 at standard sea level (340 m/s * 0.
 AIR_DENSITY    = 1.225   # kg/m3 — standard sea level density
 
 # ── Skip already-converted cases (safe to re-run) ─────────────────────────────
-SKIP_EXISTING = False
+SKIP_EXISTING = True
 
 
 # ──────────────────────────────────────────────────────────────────────────────

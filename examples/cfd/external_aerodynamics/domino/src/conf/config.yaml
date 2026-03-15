@@ -20,17 +20,17 @@
 project: # Project name
   name: RAF_CFD
   
-exp_tag: 2 # Experiment tag
+exp_tag: 1 # Experiment tag
 # Main output directory.
-project_dir: outputs/${project.name}/
-output: outputs/${project.name}/${exp_tag}
+project_dir: /home/user/gcs/gaandeev_ntop/Task2_Files_DoE_pipeline/test/domino/${project.name}/
+output: /home/user/gcs/gaandeev_ntop/Task2_Files_DoE_pipeline/test/domino/${project.name}/${exp_tag}
 
 hydra: # Hydra config
   run:
     dir: ${output}
   output_subdir: hydra  # Default is .hydra which causes files not being uploaded in W&B.
 
-# The directory to search for checkpoints to continue training.
+# The directory to search for checkpoints to continue training..
 resume_dir: ${output}/models
 
 # ┌───────────────────────────────────────────┐
@@ -70,22 +70,22 @@ variables:
 # │         Data Configs                      │
 # └───────────────────────────────────────────┘  
 data: # Input directory for training and validation data
-  input_dir: /home/skandmishra/raf_test/zarr_train
-  input_dir_val: /home/skandmishra/raf_test/zarr_val
-  bounding_box: # Bounding box of the CFD volume domain (meters)
-    min: [-2.0, -3.7, -2.7]
-    max: [7.2,  3.5,  2.3]
-  bounding_box_surface: # Bounding box of the aircraft surface (meters)
-    min: [-0.1, -1.6, -0.2]
-    max: [2.5,  1.6,  0.5]
+  input_dir: /home/user/gcs/gaandeev_ntop/Task2_Files_DoE_pipeline/test/zarr_data
+  input_dir_val: /home/user/gcs/gaandeev_ntop/Task2_Files_DoE_pipeline/test/zarr_val
+  bounding_box_surface: # Bounding box of the CFD volume domain (meters)
+    min: [0.00, -5.9, -1.69]
+    max: [9.66,  5.9,  3.39]
+  bounding_box: # Bounding box of the aircraft surface (meters)
+    min: [-5.41, -12.26, -7.09]
+    max: [25.22,  12.63,  8.37]
   gpu_preprocessing: true
   gpu_output: true
   normalize_coordinates: true
   sample_in_bbox: true
   sampling: true
-  scaling_factors: /home/skandmishra/raf_test/scaling_factors/scaling_factors.pkl
+  scaling_factors: /home/user/gcs/gaandeev_ntop/Task2_Files_DoE_pipeline/test/scaling_factors/scaling_factors.pkl
   volume_sample_from_disk: true
-  max_samples_for_statistics: 200
+  max_samples_for_statistics: 290
 
 # ┌───────────────────────────────────────────┐
 # │          Domain Parallelism Settings      │
@@ -103,7 +103,7 @@ model:
   activation: "gelu" # "relu" or "gelu"
   loss_function:
     loss_type: "mse" # mse or rmse
-    area_weighing_factor: 54 # Generally inverse of maximum area (max STL face area ~0.012–0.017 m² → 1/0.012 ≈ 83)
+    area_weighing_factor: 43 # Generally inverse of maximum area (max STL face area ~0.012–0.017 m² → 1/0.012 ≈ 83)
   interp_res: [128, 64, 64] # resolution of latent space 128, 64, 48
   use_sdf_in_basis_func: true # SDF in basis function network
   volume_points_sample: 8192 # Number of points to sample in volume per epoch
