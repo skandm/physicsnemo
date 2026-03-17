@@ -20,7 +20,7 @@
 project: # Project name
   name: RAF_CFD
   
-exp_tag: 1 # Experiment tag
+exp_tag: 2 # Experiment tag
 # Main output directory.
 project_dir: /home/user/gcs/gaandeev_ntop/Task2_Files_DoE_pipeline/test/domino/${project.name}/
 output: /home/user/gcs/gaandeev_ntop/Task2_Files_DoE_pipeline/test/domino/${project.name}/${exp_tag}
@@ -104,14 +104,14 @@ model:
   loss_function:
     loss_type: "mse" # mse or rmse
     area_weighing_factor: 43 # Generally inverse of maximum area (max STL face area ~0.012–0.017 m² → 1/0.012 ≈ 83)
-  interp_res: [128, 64, 64] # resolution of latent space 128, 64, 48
+  interp_res: [256, 128, 128] # resolution of latent space 128, 64, 48
   use_sdf_in_basis_func: true # SDF in basis function network
-  volume_points_sample: 8192 # Number of points to sample in volume per epoch
+  volume_points_sample: 32768 # Number of points to sample in volume per epoch
   surface_points_sample: 8192 # Number of points to sample on surface per epoch
   surface_sampling_algorithm: area_weighted #random or area_weighted
-  geom_points_sample: 50_000 # Number of points to sample on STL per epoch
+  geom_points_sample: 100000 # Number of points to sample on STL per epoch
   num_neighbors_surface: 7 # How many neighbors on surface?
-  num_neighbors_volume: 10 # How many neighbors on volume?
+  num_neighbors_volume: 16 # How many neighbors on volume?
   combine_volume_surface: false # combine volume and surface encodings
   return_volume_neighbors: false # Whether to return volume neighbors or not
   use_surface_normals: true # Use surface normals and surface areas for surface computation?
@@ -128,7 +128,7 @@ model:
       base_neurons: 32 # 256 or 64
       base_neurons_in: 1
       base_neurons_out: 1
-      volume_radii: [0.1, 0.5, 1.0, 2.5] # radii for volume
+      volume_radii: [0.02, 0.1, 0.5, 1.0] # radii for volume
       surface_radii: [0.01, 0.05, 1.0] # radii for surface
       surface_hops: 1 # Number of surface iterations
       volume_hops: 1 # Number of volume iterations
