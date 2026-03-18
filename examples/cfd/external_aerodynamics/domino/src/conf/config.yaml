@@ -20,7 +20,7 @@
 project: # Project name
   name: RAF_CFD
   
-exp_tag: 2 # Experiment tag
+exp_tag: 4 # Experiment tag
 # Main output directory.
 project_dir: /home/user/gcs/gaandeev_ntop/Task2_Files_DoE_pipeline/test/domino/${project.name}/
 output: /home/user/gcs/gaandeev_ntop/Task2_Files_DoE_pipeline/test/domino/${project.name}/${exp_tag}
@@ -76,15 +76,15 @@ data: # Input directory for training and validation data
     min: [0.00, -5.9, -1.69]
     max: [9.66,  5.9,  3.39]
   bounding_box: # Bounding box of the aircraft surface (meters)
-    min: [-5.41, -12.26, -7.09]
-    max: [25.22,  12.63,  8.37]
+    min: [-2.41, -8.26, -5.09]
+    max: [20.22,  9.63,  5.37]
   gpu_preprocessing: true
   gpu_output: true
   normalize_coordinates: true
   sample_in_bbox: true
   sampling: true
   scaling_factors: /home/user/gcs/gaandeev_ntop/Task2_Files_DoE_pipeline/test/scaling_factors/scaling_factors.pkl
-  volume_sample_from_disk: true
+  volume_sample_from_disk: false 
   max_samples_for_statistics: 290
 
 # ┌───────────────────────────────────────────┐
@@ -205,7 +205,7 @@ train: # Training configurable parameters
       _target_: torch.cuda.amp.GradScaler
       enabled: ${..enabled}
     clip_grad: true
-    grad_max_norm: 2.0
+    grad_max_norm: 1.0
 
 
 # ┌───────────────────────────────────────────┐
