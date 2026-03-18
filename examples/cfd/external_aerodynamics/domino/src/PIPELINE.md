@@ -15,8 +15,12 @@ Raw CFD data                    Zarr dataset                   Trained model
 convert_to_zarr.py  ──►  validate_zarr.py                      run_inference.py
                          inspect_zarr.py                        (new STL → VTI)
                          check_coords.py
-                         split_zarr.py  ──►  zarr_train/
-                                             zarr_val/
+                         split_zarr.py  ──►  zarr_val/  (val cases moved out)
+                                        └── zarr/      (train, unchanged)
+                                                  │
+                                                  ▼
+                                    shuffle_zarr_volume.py  ──►  zarr_shuffled/
+                                    (recommended for volume_sample_from_disk: true)
                                                   │
                                                   ▼
                                          check_bounds.py  ──►  config.yaml
@@ -209,15 +213,15 @@ python check_coords.py --zarr_dir /data/zarr_train --config conf/config.yaml --s
 
 **Script:** `split_zarr.py`
 
-Moves `.zarr` cases from a single directory into separate `zarr_train/` and
-`zarr_val/` directories.
+Moves validation cases out of `zarr_dir` into a separate `zarr_val/` directory.
+`zarr_dir` stays in place and becomes the training directory — only the val
+cases (~20%) are moved, not the full dataset.
 
 ### CLI arguments
 
 | Argument | Required | Default | Description |
 |---|---|---|---|
-| `--zarr_dir` | yes | — | Source directory with all `.zarr` cases |
-| `--train_dir` | no | `<zarr_dir>/../zarr_train` | Output train directory |
+| `--zarr_dir` | yes | — | Directory with all `.zarr` cases (becomes train dir) |
 | `--val_dir` | no | `<zarr_dir>/../zarr_val` | Output val directory |
 | `--val_pct` | no | `0.2` | Fraction of cases for validation (e.g. `0.2` = 20%) |
 | `--random` | no | off | Shuffle cases randomly before splitting |
@@ -231,13 +235,92 @@ python split_zarr.py --zarr_dir /data/zarr
 # Random 20% val split, reproducible:
 python split_zarr.py --zarr_dir /data/zarr --val_pct 0.2 --random --seed 42
 
-# Custom output directories:
-python split_zarr.py --zarr_dir /data/zarr --train_dir /data/train --val_dir /data/val
+# Custom val directory:
+python split_zarr.py --zarr_dir /data/zarr --val_dir /data/zarr_val
 ```
+
+The script prints the exact `input_dir` / `input_dir_val` paths to set in `config.yaml`.
 
 ---
 
-## Step 6 — Get Bounding Boxes
+## Step 6 — Shuffle Volume Data (Recommended)
+
+**Script:** `shuffle_zarr_volume.py`
+
+Copies the training zarr directory to a new location with `volume_mesh_centers`
+and `volume_fields` randomly permuted. This is required when using
+`volume_sample_from_disk: true` with a bounding box that covers less than the
+full domain.
+
+### Why this is needed
+
+`volume_sample_from_disk: true` reads **contiguous chunks** from zarr rather
+than loading all points. It assumes the data is pre-shuffled so that contiguous
+chunks are spatially random. CFD data is stored in mesh order (spatially
+correlated), so without shuffling, a chunk may land entirely outside the
+bounding box and cause:
+
+```
+ValueError: Volume mesh has fewer points than requested sample size
+```
+
+Only the training dataset needs shuffling. Validation data is not affected.
+
+### What is shuffled
+
+Both arrays are permuted with the **same random index** to keep them aligned:
+
+| Array | Shape | Action |
+|---|---|---|
+| `volume_mesh_centers` | [N, 3] | Shuffled |
+| `volume_fields` | [N, C] | Shuffled (same permutation) |
+| `stl_coordinates`, `stl_centers`, `stl_faces`, `stl_areas` | — | Copied as-is |
+| `global_params_values`, `global_params_reference` | — | Copied as-is |
+
+### CLI arguments
+
+| Argument | Required | Default | Description |
+|---|---|---|---|
+| `--src_dir` | yes | — | Source zarr directory (original training data) |
+| `--dst_dir` | yes | — | Destination for shuffled zarr cases |
+| `--seed` | no | `42` | Random seed for reproducibility |
+| `--dry_run` | no | off | Show what would be done without writing files |
+| `--skip_done` | no | off | Skip cases already present in `dst_dir` (for resuming) |
+
+### Usage
+```bash
+# Dry run first:
+python shuffle_zarr_volume.py \
+    --src_dir /data/zarr_data \
+    --dst_dir /data/zarr_data_shuffled \
+    --dry_run
+
+# Shuffle all training cases:
+python shuffle_zarr_volume.py \
+    --src_dir /data/zarr_data \
+    --dst_dir /data/zarr_data_shuffled
+
+# Resume an interrupted run:
+python shuffle_zarr_volume.py \
+    --src_dir /data/zarr_data \
+    --dst_dir /data/zarr_data_shuffled \
+    --skip_done
+```
+
+After running, update `config.yaml`:
+```yaml
+data:
+  input_dir: /data/zarr_data_shuffled
+  volume_sample_from_disk: true
+```
+
+> **Note:** Each case loads ~1.1 GB into RAM during shuffling (40M points × 7
+> fields × 4 bytes). Expect ~1–2 minutes per case. The original `zarr_data`
+> is not modified.
+
+---
+
+## Step 7 — Get Bounding Boxes
 
 **Script:** `check_bounds.py`
 
@@ -253,7 +336,7 @@ cases, with a ready-to-paste `config.yaml` snippet.
 
 ### Usage
 ```bash
-python check_bounds.py --data_dir /data/zarr_train
+python check_bounds.py --data_dir /data/zarr
 ```
 
 ### Example output
@@ -274,7 +357,7 @@ Paste these values into `config.yaml` under `data.bounding_box` and
 
 ---
 
-## Step 7 — Get Area Weighing Factor
+## Step 8 — Get Area Weighing Factor
 
 **Script:** `check_areas.py`
 
@@ -290,7 +373,7 @@ Reports STL face area statistics and suggests an `area_weighing_factor` value
 
 ### Usage
 ```bash
-python check_areas.py --data_dir /data/zarr_train
+python check_areas.py --data_dir /data/zarr
 ```
 
 ### Example output
@@ -309,15 +392,23 @@ Paste the suggested value into `config.yaml`.
 
 ---
 
-## Step 8 — Update config.yaml
+## Step 9 — Update config.yaml
 
 Edit `conf/config.yaml` with the values from the previous steps:
 
 ```yaml
+project:
+  name: RAF_CFD
+
+exp_tag: 1   # increment for each new training run
+
+output: /path/to/outputs/${project.name}/${exp_tag}   # where checkpoints/logs are saved
+
 data:
-  input_dir: /path/to/zarr_train          # from split_zarr.py
+  input_dir: /path/to/zarr                # original zarr_dir (train cases remain here)
   input_dir_val: /path/to/zarr_val        # from split_zarr.py
   scaling_factors: /path/to/scaling_factors/scaling_factors.pkl
+  max_samples_for_statistics: 200         # set to total number of training cases
   bounding_box:                           # from check_bounds.py
     min: [-2.0, -3.7, -2.7]
     max: [7.2,  3.5,  2.3]
@@ -326,6 +417,7 @@ data:
     max: [2.94,  1.59,  0.43]
 
 model:
+  model_type: volume                      # volume / surface / combined
   loss_function:
     area_weighing_factor: 54              # from check_areas.py
 
@@ -335,36 +427,45 @@ variables:
       # Column order must match VOLUME_FIELD_NAMES in convert_to_zarr.py
       U_time_avg: vector   # columns 0, 1, 2
       p_time_avg: scalar   # column 3
-
-exp_tag: 1   # increment this for each new training run
 ```
 
-> **Important:** The variable names and order under `variables.volume.solution`
-> must exactly match the column order used in `convert_to_zarr.py`.
+> **Notes:**
+> - `output` controls where checkpoints, TensorBoard logs, and Hydra config are saved. Set to an absolute path (e.g. on a mounted GCS bucket) to persist across sessions.
+> - `data_processor`, `project_dir`, and `train.checkpoint_dir` are legacy fields — leave them as-is, they are not used by `train.py`.
+> - Variable names and order under `variables.volume.solution` must exactly match the column order in `convert_to_zarr.py`.
 
 ---
 
-## Step 9 — Compute Scaling Factors
+## Step 10 — Compute Scaling Factors
 
 **Script:** `compute_statistics.py`
 
 Computes mean, std, min, and max across the training dataset and saves them to
 `scaling_factors.pkl`. This file is required by both training and inference.
 
+Makes **two passes** over the dataset: first to compute mean/std, then to
+compute min/max with outlier filtering (±9σ). Expect roughly 2× the time of a
+single read pass.
+
+### Prerequisites
+`config.yaml` must have the following set before running:
+- `model.model_type` — determines which fields to compute stats for
+- `data.bounding_box` and `data.bounding_box_surface` — from `check_bounds.py`
+
 ### CLI arguments
 
 | Argument | Required | Default | Description |
 |---|---|---|---|
 | `--data_dir` | yes | — | Training zarr directory |
-| `--output` | yes | — | Path to save `scaling_factors.pkl` |
+| `--output` | yes | — | Full path to save `scaling_factors.pkl` (must end in `.pkl`) |
 | `--config` | no | `conf/config.yaml` | Path to config file |
-| `--max_samples` | no | from config | Max data points to sample (lower = faster, less accurate) |
+| `--max_samples` | no | from config | Max number of cases to sample (default 200) |
 | `--force` | no | off | Recompute even if `.pkl` already exists |
 
 ### Usage
 ```bash
 python compute_statistics.py \
-    --data_dir /data/zarr_train \
+    --data_dir /data/zarr \
     --output /data/scaling_factors/scaling_factors.pkl
 ```
 
@@ -372,12 +473,13 @@ python compute_statistics.py \
 - `scaling_factors.pkl` — loaded by training and inference
 - `scaling_factors_summary.txt` — human-readable report of all statistics
 
-> **Note:** Make sure `data.scaling_factors` in `config.yaml` points to the
-> same path as `--output`.
+> **Note:** `--output` must be a full file path ending in `.pkl`, not just a
+> directory. Make sure `data.scaling_factors` in `config.yaml` points to the
+> same path.
 
 ---
 
-## Step 10 — Train
+## Step 11 — Train
 
 **Script:** `train.py`
 
@@ -386,11 +488,19 @@ logs, and TensorBoard events to `outputs/<project.name>/<exp_tag>/`.
 
 ### Usage
 ```bash
-# Standard run (reads conf/config.yaml):
+# Single GPU:
 python train.py
 
+# Multi-GPU (recommended):
+torchrun --nproc_per_node=8 train.py
+
 # Override specific config values without editing the file:
-python train.py exp_tag=2 train.epochs=500
+torchrun --nproc_per_node=8 train.py exp_tag=2 train.epochs=500
+```
+
+### Prerequisites
+```bash
+pip install pynvml
 ```
 
 ### Key config parameters
@@ -416,7 +526,7 @@ outputs/RAF_CFD/2/
 
 ---
 
-## Step 11 — Monitor Training with TensorBoard
+## Step 12 — Monitor Training with TensorBoard
 
 TensorBoard events are written to `outputs/<project.name>/<exp_tag>/tensorboard/`
 during training. The following metrics are logged:
@@ -443,7 +553,7 @@ is forwarded automatically.
 
 ---
 
-## Step 12 — Inference
+## Step 13 — Inference
 
 **Script:** `run_inference.py`
 
@@ -521,6 +631,13 @@ python run_inference.py \
 **`scaling_factors.pkl` not found during training**
 > Run `compute_statistics.py` first, and make sure `data.scaling_factors` in
 > `config.yaml` points to the correct path.
+
+**`ValueError: Volume mesh has fewer points than requested sample size`**
+> Occurs when `volume_sample_from_disk: true` reads a contiguous chunk that lands
+> outside the bounding box. The zarr volume data must be shuffled first.
+> Run `shuffle_zarr_volume.py` on the training data, then point `input_dir` to
+> the shuffled directory. Alternatively set `volume_sample_from_disk: false` to
+> load all points (more IO, but always correct).
 
 **Training loss not decreasing**
 > - Check `area_weighing_factor` — run `check_areas.py` to verify the value

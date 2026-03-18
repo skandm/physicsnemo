@@ -974,9 +974,10 @@ class DoMINODataPipe(Dataset):
         self.dataset = dataset
 
         if self.config.volume_sample_from_disk:
-            # We deliberately double the data to read compared to the sampling size:
+            # Over-pull from disk to ensure enough points survive bbox filtering.
+            # 10x gives sufficient margin even when the bbox covers ~27% of the domain.
             self.dataset.set_volume_sampling_size(
-                2 * self.config.volume_points_sample
+                10 * self.config.volume_points_sample
             )
 
     def __len__(self):
