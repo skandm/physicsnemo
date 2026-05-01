@@ -20,7 +20,7 @@ Standalone DoMINO inference script for volume-only predictions.
 Given a new STL geometry, predicts [Vx, Vy, Vz, P] at random points
 throughout the bounding box and saves results as a VTU file for ParaView.
 
-Usage:
+CLI usage:
     # Minimal — config and scaling path are both read from the training run:
     python run_inference.py \\
         --stl        /path/to/aircraft.stl \\
@@ -35,6 +35,14 @@ Usage:
         --output     predicted_volume.vtu \\
         --num_points 500000
 
+Programmatic usage (multi-geometry):
+    from run_inference import DoMINORunner
+
+    runner = DoMINORunner(checkpoint_dir="outputs/RAF_CFD/1/models")
+    runner.infer("car_v1.stl", "car_v1.vtu")
+    runner.infer("car_v2.stl", "car_v2.vtu")
+    runner.infer("truck.stl",  "truck.vti", inlet_velocity=30.0)
+
 The script will:
   1. Load the STL and convert to GPU tensors
   2. Set up the DoMINODataPipe for preprocessing (no dataset required)
@@ -45,7 +53,8 @@ The script will:
 """
 
 import argparse
-import sys
+import glob
+import re
 import time
 from pathlib import Path
 
@@ -765,6 +774,307 @@ def build_datapipe(
     return datapipe
 
 
+# ---------------------------------------------------------------------------
+# Multi-geometry runner  (load once, infer many)
+# ---------------------------------------------------------------------------
+
+class DoMINORunner:
+    """Load the DoMINO model once and run inference on multiple geometries.
+
+    Expensive operations (config load, scaling factors, datapipe construction,
+    model weights deserialisation) happen once in ``__init__``.  Each call to
+    :meth:`infer` is then fast — only the per-geometry work (STL load + model
+    forward) is repeated.
+
+    Parameters
+    ----------
+    checkpoint_dir : str | Path
+        Directory containing saved ``DoMINO.0.*.mdlus`` checkpoint files
+        (e.g. ``outputs/RAF_CFD/1/models``).
+    config_path : str | Path | None
+        Path to ``config.yaml``.  If *None*, looks for the Hydra-saved config at
+        ``<checkpoint_dir>/../hydra/config.yaml``, then falls back to
+        ``conf/config.yaml`` in the current directory.
+    scaling_path : str | Path | None
+        Path to ``scaling_factors.pkl``.  If *None*, uses ``data.scaling_factors``
+        from the resolved config.
+    device : torch.device | str | None
+        Target device.  Defaults to the ``DistributedManager`` device (GPU 0
+        when available).
+    """
+
+    def __init__(
+        self,
+        checkpoint_dir,
+        config_path=None,
+        scaling_path=None,
+        device=None,
+    ):
+        logger = _make_logger()
+        self._logger = logger
+
+        # 1. Distributed / device
+        if not DistributedManager.is_initialized():
+            DistributedManager.initialize()
+        dm = DistributedManager()
+        self.device = torch.device(device) if device is not None else dm.device
+        logger.info(f"DoMINORunner — device: {self.device}")
+
+        # 2. Config
+        checkpoint_dir = Path(checkpoint_dir)
+        hydra_saved = checkpoint_dir.parent / "hydra" / "config.yaml"
+        if config_path is not None:
+            _config_path = Path(config_path).resolve()
+        elif hydra_saved.exists():
+            _config_path = hydra_saved.resolve()
+            logger.info(f"Auto-detected config from training run: {_config_path}")
+        else:
+            _config_path = Path("conf/config.yaml").resolve()
+            logger.info(f"Falling back to local config: {_config_path}")
+
+        if not _config_path.exists():
+            raise FileNotFoundError(
+                f"Config not found: {_config_path}\n"
+                "Pass config_path= explicitly."
+            )
+
+        cfg = OmegaConf.load(_config_path)
+
+        if scaling_path is not None:
+            OmegaConf.update(cfg, "data.scaling_factors", str(scaling_path), merge=True)
+
+        _scaling_path = Path(cfg.data.scaling_factors)
+        if not _scaling_path.exists():
+            raise FileNotFoundError(
+                f"Scaling factors not found: {_scaling_path}\n"
+                "Pass scaling_path= explicitly."
+            )
+
+        self.cfg = cfg
+        logger.info(f"Config        : {_config_path}")
+        logger.info(f"Scaling path  : {_scaling_path}")
+
+        # 3. Scaling factors
+        logger.info("Loading scaling factors …")
+        vol_factors, _ = load_scaling_factors(cfg)
+        logger.info(f"  vol_factors shape: {vol_factors.shape}")
+
+        # 4. Datapipe  (sampling=False — we manage our own point sampling for inference)
+        logger.info("Building preprocessing pipeline …")
+        self.datapipe = build_datapipe(cfg, vol_factors, sampling=False)
+
+        # 5. Model
+        logger.info("Building DoMINO model …")
+        model_type = cfg.model.model_type
+        num_vol_vars, num_surf_vars, num_global_features = get_num_vars(cfg, model_type)
+        self.model = DoMINO(
+            input_features=3,
+            output_features_vol=num_vol_vars,
+            output_features_surf=num_surf_vars,
+            global_features=num_global_features,
+            model_parameters=cfg.model,
+        ).to(self.device)
+
+        # 6. Checkpoint
+        if not checkpoint_dir.exists():
+            raise FileNotFoundError(f"Checkpoint directory not found: {checkpoint_dir}")
+
+        mdlus_files = glob.glob(str(checkpoint_dir / "DoMINO.0.*.mdlus"))
+        if not mdlus_files:
+            raise FileNotFoundError(
+                f"No DoMINO.0.*.mdlus checkpoint files found in {checkpoint_dir}"
+            )
+
+        def _epoch(f):
+            m = re.search(r"\.(\d+)\.mdlus$", f)
+            return int(m.group(1)) if m else -1
+
+        latest_mdlus = max(mdlus_files, key=_epoch)
+        logger.info(f"Loading checkpoint: {Path(latest_mdlus).name}")
+        self.model.load(latest_mdlus)
+        self.model.eval()
+        logger.info("Checkpoint loaded — model ready.")
+
+        # 7. Output channel names (derived from config once)
+        self.channel_names: list[str] = []
+        self.vti_output_names: dict[str, str] = {}
+        _first_vector = True
+        _first_scalar = True
+        for var_name, var_type in cfg.variables.volume.solution.items():
+            if var_type == "vector":
+                self.channel_names += [
+                    f"{var_name}_x", f"{var_name}_y", f"{var_name}_z"
+                ]
+                if _first_vector:
+                    self.vti_output_names[var_name] = "velocity_time_avg"
+                    _first_vector = False
+            else:
+                self.channel_names.append(var_name)
+                if _first_scalar:
+                    self.vti_output_names[var_name] = "pressure_time_avg"
+                    _first_scalar = False
+        logger.info(f"Output channels: {self.channel_names}")
+
+    def infer(
+        self,
+        stl_path,
+        output_path,
+        *,
+        inlet_velocity=None,
+        air_density=None,
+        num_points=500_000,
+        batch_size=None,
+        stl_scale=1.0,
+        vti_resolution=None,
+    ):
+        """Run inference on a single STL geometry.
+
+        Parameters
+        ----------
+        stl_path : str | Path
+            Path to the input STL file.
+        output_path : str | Path
+            Output file path.  Extension controls format:
+            ``.vti`` → regular-grid VTI (recommended for ParaView);
+            ``.vtu`` / ``.vtp`` → scattered-point VTU.
+        inlet_velocity : float | None
+            Override inlet velocity magnitude (m/s).  Uses config default if *None*.
+        air_density : float | None
+            Override air density (kg/m³).  Uses config default if *None*.
+        num_points : int
+            Number of exterior volume points to predict (VTU mode only).
+        batch_size : int | None
+            Points per inference batch.  Defaults to ``volume_points_sample`` from config.
+        stl_scale : float
+            Multiply STL coordinates by this factor before inference.
+            Use ``0.001`` to convert millimetres → metres.
+        vti_resolution : tuple[int, int, int] | None
+            Grid resolution ``(nx, ny, nz)`` for VTI output.
+            Defaults to ``model.interp_res`` from config.
+
+        Returns
+        -------
+        str
+            The resolved output path.
+        """
+        logger = self._logger
+        cfg = self.cfg
+        device = self.device
+
+        output_path = str(output_path)
+        output_ext = Path(output_path).suffix.lower()
+        grid_mode = (output_ext == ".vti")
+
+        logger.info(f"infer: {stl_path} → {output_path}")
+
+        # --- Global params tensor ---
+        gp = cfg.variables.global_parameters
+        gp_vals = []
+        gp_refs = []
+        for param_name, param_cfg in gp.items():
+            if param_cfg.type == "vector":
+                vals = list(param_cfg.reference)
+            else:
+                vals = [float(param_cfg.reference)]
+
+            if param_name == "inlet_velocity" and inlet_velocity is not None:
+                vals = [inlet_velocity] * len(vals)
+            if param_name == "air_density" and air_density is not None:
+                vals = [air_density]
+
+            gp_vals.extend(vals)
+            gp_refs.extend(vals)
+
+        global_params_values = torch.tensor(
+            gp_vals, dtype=torch.float32, device=device
+        ).reshape(-1, 1)
+        global_params_reference = torch.tensor(
+            gp_refs, dtype=torch.float32, device=device
+        ).reshape(-1, 1)
+        logger.info(f"  global_params: {global_params_values.flatten().tolist()}")
+
+        # --- Load STL ---
+        stl_coordinates, stl_faces = load_stl_to_tensors(str(stl_path), device)
+        if stl_scale != 1.0:
+            stl_coordinates = stl_coordinates * stl_scale
+            logger.info(f"  Scaled STL coordinates by {stl_scale}")
+        logger.info(
+            f"  {stl_coordinates.shape[0]:,} vertices, "
+            f"{stl_faces.shape[0] // 3:,} triangles"
+        )
+
+        # --- STL bbox vs config bbox sanity check ---
+        stl_min = stl_coordinates.min(dim=0).values.cpu().tolist()
+        stl_max = stl_coordinates.max(dim=0).values.cpu().tolist()
+        cfg_vol_min = list(cfg.data.bounding_box.min)
+        cfg_vol_max = list(cfg.data.bounding_box.max)
+        stl_inside_vol = all(
+            cfg_vol_min[i] <= stl_min[i] and stl_max[i] <= cfg_vol_max[i]
+            for i in range(3)
+        )
+        if not stl_inside_vol:
+            logger.warning(
+                "STL vertices extend OUTSIDE the config volume bounding box! "
+                "Possible coordinate-system mismatch — check --stl_scale."
+            )
+
+        # --- Run inference ---
+        _batch_size = batch_size or cfg.model.volume_points_sample
+        t_start = time.perf_counter()
+
+        if grid_mode:
+            vti_res = (
+                tuple(vti_resolution)
+                if vti_resolution is not None
+                else tuple(int(r) for r in cfg.model.interp_res)
+            )
+            nx, ny, nz = vti_res
+            logger.info(
+                f"  Grid {nx}×{ny}×{nz} = {nx*ny*nz:,} cells, "
+                f"batch_size={_batch_size:,}"
+            )
+            preds_flat, bbox_min, bbox_max, _ = run_inference_grid(
+                stl_coordinates=stl_coordinates,
+                stl_faces=stl_faces,
+                global_params_values=global_params_values,
+                global_params_reference=global_params_reference,
+                model=self.model,
+                datapipe=self.datapipe,
+                resolution=vti_res,
+                batch_size=_batch_size,
+                logger=logger,
+            )
+            t_end = time.perf_counter()
+            save_vti_direct(
+                preds_flat, output_path, self.channel_names,
+                bbox_min=bbox_min, bbox_max=bbox_max,
+                resolution=vti_res,
+                output_names=self.vti_output_names,
+            )
+        else:
+            n_batches = -(-num_points // _batch_size)
+            logger.info(
+                f"  {num_points:,} points, "
+                f"batch_size={_batch_size:,}, ~{n_batches} batches"
+            )
+            volume_coords, volume_preds = run_inference(
+                stl_coordinates=stl_coordinates,
+                stl_faces=stl_faces,
+                global_params_values=global_params_values,
+                global_params_reference=global_params_reference,
+                model=self.model,
+                datapipe=self.datapipe,
+                batch_size=_batch_size,
+                total_points=num_points,
+                logger=logger,
+            )
+            t_end = time.perf_counter()
+            save_vtu(volume_coords, volume_preds, output_path, self.channel_names)
+
+        logger.info(f"  Done in {t_end - t_start:.1f}s → {output_path}")
+        return output_path
+
+
 def parse_args():
     p = argparse.ArgumentParser(
         description="Run DoMINO volume inference on a new STL geometry."
@@ -850,329 +1160,41 @@ def parse_args():
     return p.parse_args()
 
 
-def _step(logger, n, total, msg):
-    logger.info(f"[{n}/{total}] {msg}")
-
-
 def main():
     args = parse_args()
-
-    # -----------------------------------------------------------------------
-    # Initialise distributed (single-GPU path)
-    # -----------------------------------------------------------------------
-    DistributedManager.initialize()
-    dm = DistributedManager()
-    device = dm.device
 
     logger = _make_logger()
     logger.info("=" * 60)
     logger.info("DoMINO Volume Inference")
     logger.info("=" * 60)
-    logger.info(f"Device : {device}")
     logger.info(f"STL    : {args.stl}")
     logger.info(f"Output : {args.output}")
     logger.info(f"Points : {args.num_points:,}")
     logger.info("=" * 60)
 
-    N_STEPS = 6
-
-    # -----------------------------------------------------------------------
-    # Load config
-    # Resolution order:
-    #   1. --config <path>  (explicit)
-    #   2. <checkpoint_dir>/../hydra/config.yaml  (saved by train.py automatically)
-    #   3. conf/config.yaml in the current working directory  (fallback)
-    # -----------------------------------------------------------------------
-    checkpoint_dir = Path(args.checkpoint)
-    hydra_saved = checkpoint_dir.parent / "hydra" / "config.yaml"
-
-    if args.config is not None:
-        config_path = Path(args.config).resolve()
-    elif hydra_saved.exists():
-        config_path = hydra_saved.resolve()
-        logger.info(f"Auto-detected config from training run: {config_path}")
-    else:
-        config_path = Path("conf/config.yaml").resolve()
-        logger.info(f"Falling back to local config: {config_path}")
-
-    if not config_path.exists():
-        logger.error(
-            f"Config not found: {config_path}\n"
-            f"Pass --config /path/to/config.yaml explicitly."
-        )
-        sys.exit(1)
-
-    # OmegaConf.load handles both the original conf/config.yaml (resolves
-    # ${...} interpolations lazily) and the Hydra-saved config (already fully
-    # resolved).  No hydra initialisation needed either way.
-    cfg = OmegaConf.load(config_path)
-
-    # If --scaling was given, override the path from config:
-    if args.scaling is not None:
-        OmegaConf.update(cfg, "data.scaling_factors", args.scaling, merge=True)
-
-    scaling_path = cfg.data.scaling_factors
-    if not Path(scaling_path).exists():
-        logger.error(
-            f"Scaling factors not found: {scaling_path}\n"
-            f"Pass --scaling /path/to/scaling_factors.pkl to override."
-        )
-        sys.exit(1)
-
-    _step(logger, 1, N_STEPS, f"Config loaded from: {config_path}")
-    logger.info(f"         Scaling factors: {scaling_path}")
-
-    # -----------------------------------------------------------------------
-    # Load scaling factors
-    # -----------------------------------------------------------------------
-    _step(logger, 2, N_STEPS, "Loading scaling factors …")
-    vol_factors, surf_factors = load_scaling_factors(cfg)
-    logger.info(f"         vol_factors shape: {vol_factors.shape}")
-
-    # -----------------------------------------------------------------------
-    # Build global params tensors
-    # -----------------------------------------------------------------------
-    gp = cfg.variables.global_parameters
-    gp_vals = []
-    gp_refs = []
-    stream_velocity = 1.0   # for two-stage denormalization
-    air_density = 1.0       # for two-stage denormalization
-
-    for param_name, param_cfg in gp.items():
-        if param_cfg.type == "vector":
-            vals = list(param_cfg.reference)
-        else:
-            vals = [float(param_cfg.reference)]
-
-        # CLI overrides (only for the known params):
-        if param_name == "inlet_velocity" and args.inlet_velocity is not None:
-            # Replace all components with the magnitude override:
-            vals = [args.inlet_velocity] * len(vals)
-        if param_name == "air_density" and args.air_density is not None:
-            vals = [args.air_density]
-
-        # Capture scalar values for physical-unit denormalization:
-        if param_name == "inlet_velocity":
-            stream_velocity = float(vals[0])
-        if param_name == "air_density":
-            air_density = float(vals[0])
-
-        gp_vals.extend(vals)
-        gp_refs.extend(vals)  # reference = same as value (already normalised in config)
-
-    global_params_values = torch.tensor(
-        gp_vals, dtype=torch.float32, device=device
-    ).reshape(-1, 1)
-    global_params_reference = torch.tensor(
-        gp_refs, dtype=torch.float32, device=device
-    ).reshape(-1, 1)
-
-    logger.info(f"         global_params: {global_params_values.flatten().tolist()}")
-    logger.info(f"         stream_velocity: {stream_velocity} m/s  |  air_density: {air_density} kg/m³")
-
-    # -----------------------------------------------------------------------
-    # Load STL
-    # -----------------------------------------------------------------------
-    _step(logger, 3, N_STEPS, f"Loading STL: {args.stl}")
-    stl_coordinates, stl_faces = load_stl_to_tensors(args.stl, device)
-    if args.stl_scale != 1.0:
-        stl_coordinates = stl_coordinates * args.stl_scale
-        logger.info(f"         Scaled STL coordinates by {args.stl_scale} (unit conversion)")
-    stl_min = stl_coordinates.min(dim=0).values.cpu().tolist()
-    stl_max = stl_coordinates.max(dim=0).values.cpu().tolist()
-    logger.info(
-        f"         {stl_coordinates.shape[0]:,} vertices, "
-        f"{stl_faces.shape[0] // 3:,} triangles"
+    runner = DoMINORunner(
+        checkpoint_dir=args.checkpoint,
+        config_path=args.config,
+        scaling_path=args.scaling,
     )
-    logger.info(f"         STL bbox min : {[round(v,4) for v in stl_min]}")
-    logger.info(f"         STL bbox max : {[round(v,4) for v in stl_max]}")
-    cfg_vol_min = list(cfg.data.bounding_box.min)
-    cfg_vol_max = list(cfg.data.bounding_box.max)
-    cfg_surf_min = list(cfg.data.bounding_box_surface.min)
-    cfg_surf_max = list(cfg.data.bounding_box_surface.max)
-    logger.info(f"         Config vol   : {cfg_vol_min} → {cfg_vol_max}")
-    logger.info(f"         Config surf  : {cfg_surf_min} → {cfg_surf_max}")
-    stl_inside_surf = all(
-        cfg_surf_min[i] <= stl_min[i] and stl_max[i] <= cfg_surf_max[i]
-        for i in range(3)
+
+    vti_resolution = (
+        tuple(args.vti_resolution) if args.vti_resolution is not None else None
     )
-    stl_inside_vol = all(
-        cfg_vol_min[i] <= stl_min[i] and stl_max[i] <= cfg_vol_max[i]
-        for i in range(3)
+
+    runner.infer(
+        stl_path=args.stl,
+        output_path=args.output,
+        inlet_velocity=args.inlet_velocity,
+        air_density=args.air_density,
+        num_points=args.num_points,
+        batch_size=args.batch_size,
+        stl_scale=args.stl_scale,
+        vti_resolution=vti_resolution,
     )
-    if not stl_inside_vol:
-        logger.warning(
-            "STL vertices extend OUTSIDE the config volume bounding box! "
-            "Coordinate system mismatch between STL and config."
-        )
-    elif not stl_inside_surf:
-        logger.warning(
-            "STL vertices extend outside the config SURFACE bounding box "
-            "(this may be expected if the surface bbox is approximate)."
-        )
-    else:
-        logger.info("         STL fits within both config bounding boxes. ✓")
-
-    # -----------------------------------------------------------------------
-    # Build datapipe (preprocessing only — no dataset)
-    # Grid mode uses sampling=False so every input point is processed as-is.
-    # -----------------------------------------------------------------------
-    output_ext = Path(args.output).suffix.lower()
-    grid_mode = (output_ext == ".vti")
-
-    _step(logger, 4, N_STEPS, "Building preprocessing pipeline …")
-    datapipe = build_datapipe(cfg, vol_factors, sampling=False if grid_mode else None)
-    logger.info(
-        f"         bbox: {list(cfg.data.bounding_box.min)} → "
-        f"{list(cfg.data.bounding_box.max)}"
-    )
-    if grid_mode:
-        logger.info("         Mode : GRID — evaluating on VTI cell centres (no random sampling)")
-
-    # -----------------------------------------------------------------------
-    # Build model
-    # -----------------------------------------------------------------------
-    _step(logger, 5, N_STEPS, "Building DoMINO model …")
-    model_type = cfg.model.model_type
-    num_vol_vars, num_surf_vars, num_global_features = get_num_vars(cfg, model_type)
-
-    model = DoMINO(
-        input_features=3,
-        output_features_vol=num_vol_vars,
-        output_features_surf=num_surf_vars,
-        global_features=num_global_features,
-        model_parameters=cfg.model,
-    ).to(device)
-
-    logger.info(f"         {num_vol_vars} output channels")
-
-    # -----------------------------------------------------------------------
-    # Load checkpoint
-    # Load the .mdlus model file directly — avoids load_checkpoint also trying
-    # to load the training-state .pt file (optimizer/scheduler), which we
-    # don't need for inference.
-    # -----------------------------------------------------------------------
-    if not checkpoint_dir.exists():
-        logger.error(f"Checkpoint directory not found: {checkpoint_dir}")
-        sys.exit(1)
-
-    import glob
-    import re
-
-    mdlus_files = glob.glob(str(checkpoint_dir / "DoMINO.0.*.mdlus"))
-    if not mdlus_files:
-        logger.error(f"No DoMINO.0.*.mdlus checkpoint files found in {checkpoint_dir}")
-        sys.exit(1)
-
-    # Sort numerically by epoch number to get the latest:
-    def _epoch(f):
-        m = re.search(r"\.(\d+)\.mdlus$", f)
-        return int(m.group(1)) if m else -1
-
-    latest_mdlus = max(mdlus_files, key=_epoch)
-    logger.info(f"         Loading: {Path(latest_mdlus).name}")
-    model.load(latest_mdlus)
-    logger.info(f"         Checkpoint loaded successfully")
-
-    model.eval()
-
-    # -----------------------------------------------------------------------
-    # Determine output variable names and canonical rename map
-    # -----------------------------------------------------------------------
-    channel_names = []
-    vti_output_names: dict[str, str] = {}
-    _first_vector = True
-    _first_scalar = True
-    for var_name, var_type in cfg.variables.volume.solution.items():
-        if var_type == "vector":
-            channel_names += [f"{var_name}_x", f"{var_name}_y", f"{var_name}_z"]
-            if _first_vector:
-                vti_output_names[var_name] = "velocity_time_avg"
-                _first_vector = False
-        else:
-            channel_names.append(var_name)
-            if _first_scalar:
-                vti_output_names[var_name] = "pressure_time_avg"
-                _first_scalar = False
-    logger.info(f"         Output channels: {channel_names}")
-    logger.info(f"         VTI rename map:  {vti_output_names}")
-
-    # -----------------------------------------------------------------------
-    # Run inference
-    # -----------------------------------------------------------------------
-    _step(logger, 6, N_STEPS, "Running inference …")
-    batch_size = args.batch_size or cfg.model.volume_points_sample
-    t_start = time.perf_counter()
-
-    if grid_mode:
-        # --- Grid mode: evaluate at every VTI cell centre ---
-        vti_res = (
-            tuple(args.vti_resolution)
-            if args.vti_resolution is not None
-            else tuple(int(r) for r in cfg.model.interp_res)
-        )
-        nx, ny, nz = vti_res
-        logger.info(
-            f"         Grid {nx}×{ny}×{nz} = {nx*ny*nz:,} cells, "
-            f"batch_size={batch_size:,}"
-        )
-        preds_flat, bbox_min, bbox_max, spacing = run_inference_grid(
-            stl_coordinates=stl_coordinates,
-            stl_faces=stl_faces,
-            global_params_values=global_params_values,
-            global_params_reference=global_params_reference,
-            model=model,
-            datapipe=datapipe,
-            resolution=vti_res,
-            batch_size=batch_size,
-            logger=logger,
-        )
-        t_end = time.perf_counter()
-        n_exterior = int((preds_flat != 0).any(axis=1).sum())
-        logger.info(
-            f"Inference complete: {n_exterior:,}/{nx*ny*nz:,} exterior cells "
-            f"in {t_end - t_start:.1f}s"
-        )
-        logger.info(f"Saving {nx}×{ny}×{nz} VTI to: {args.output}")
-        save_vti_direct(
-            preds_flat, args.output, channel_names,
-            bbox_min=bbox_min, bbox_max=bbox_max,
-            resolution=vti_res,
-            output_names=vti_output_names,
-        )
-    else:
-        # --- Scatter mode: random point sampling → VTU/VTP ---
-        n_batches = -(-args.num_points // batch_size)
-        logger.info(
-            f"         {args.num_points:,} points, "
-            f"batch_size={batch_size:,}, ~{n_batches} batches"
-        )
-        volume_coords, volume_preds = run_inference(
-            stl_coordinates=stl_coordinates,
-            stl_faces=stl_faces,
-            global_params_values=global_params_values,
-            global_params_reference=global_params_reference,
-            model=model,
-            datapipe=datapipe,
-            batch_size=batch_size,
-            total_points=args.num_points,
-            logger=logger,
-        )
-        t_end = time.perf_counter()
-        logger.info(
-            f"Inference complete: {volume_coords.shape[0]:,} points "
-            f"in {t_end - t_start:.1f}s "
-            f"({volume_coords.shape[0] / (t_end - t_start):.0f} pts/s)"
-        )
-        logger.info(f"Saving {volume_coords.shape[0]:,} points to: {args.output}")
-        save_vtu(volume_coords, volume_preds, args.output, channel_names)
 
     logger.info("=" * 60)
     logger.info("DONE")
-    logger.info(f"  Output : {args.output}")
-    logger.info(f"  Time   : {t_end - t_start:.1f}s")
-    if grid_mode:
-        logger.info(f"  Grid   : {vti_res[0]}×{vti_res[1]}×{vti_res[2]} — supports all ParaView filters")
     logger.info(f"  Open '{args.output}' in ParaView to visualise results.")
     logger.info("=" * 60)
 

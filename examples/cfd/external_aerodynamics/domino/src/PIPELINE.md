@@ -611,6 +611,55 @@ python run_inference.py \
 > directory automatically (saved there by `train.py`), so `--config` and
 > `--scaling` overrides are usually not needed.
 
+### Programmatic usage — multiple geometries
+
+For servers or batch workflows that process many geometries per session, use
+`DoMINORunner` directly.  Config load, scaling factors, datapipe construction,
+and model-weight deserialisation (the 6–18 s fixed overhead) happen **once** in
+the constructor.  Each `infer()` call only performs the per-geometry work (STL
+load + model forward).
+
+```python
+from run_inference import DoMINORunner
+
+# --- startup: expensive, runs once ---
+runner = DoMINORunner(
+    checkpoint_dir="outputs/RAF_CFD/1/models",
+    # config_path and scaling_path are auto-detected from the checkpoint dir
+)
+
+# --- per-geometry: fast ---
+runner.infer("car_v1.stl",  "car_v1.vtu")
+runner.infer("car_v2.stl",  "car_v2.vtu")
+runner.infer("truck.stl",   "truck.vti",  inlet_velocity=30.0)
+runner.infer("wing.stl",    "wing.vtu",   stl_scale=0.001, num_points=1_000_000)
+```
+
+**`DoMINORunner` constructor parameters:**
+
+| Parameter | Default | Description |
+|---|---|---|
+| `checkpoint_dir` | required | Directory containing `.mdlus` files |
+| `config_path` | auto-detected | Path to `config.yaml` |
+| `scaling_path` | from config | Path to `scaling_factors.pkl` |
+| `device` | GPU 0 | `torch.device` or string |
+
+**`runner.infer()` parameters** (all keyword-only except the first two):
+
+| Parameter | Default | Description |
+|---|---|---|
+| `stl_path` | required | Input STL file |
+| `output_path` | required | Output file (`.vti` or `.vtu`) |
+| `inlet_velocity` | from config | Override inlet velocity (m/s) |
+| `air_density` | from config | Override air density (kg/m³) |
+| `num_points` | `500_000` | Points to predict (VTU mode) |
+| `batch_size` | from config | Points per inference batch |
+| `stl_scale` | `1.0` | Coordinate scale factor (use `0.001` for mm → m) |
+| `vti_resolution` | from config | `(nx, ny, nz)` for VTI output |
+
+The CLI (`python run_inference.py ...`) is unchanged and internally instantiates
+`DoMINORunner` for a single geometry.
+
 ---
 
 ## Troubleshooting
