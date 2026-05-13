@@ -262,7 +262,7 @@ def compute_surface_features(stl, stl_areas: np.ndarray, surface_pts: np.ndarray
         normals: float32 array [N, 3] — outward face normals
         areas:   float32 array [N]   — face areas
     """
-    _, _, cell_ids = stl.find_closest_cell(surface_pts, return_closest_point=True)
+    cell_ids, _ = stl.find_closest_cell(surface_pts, return_closest_point=True)
     normals = stl.cell_data["Normals"][cell_ids].astype(np.float32)  # [N, 3]
     areas   = stl_areas[cell_ids].astype(np.float32)                 # [N]
     return normals, areas
