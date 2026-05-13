@@ -57,8 +57,8 @@ import zarr
 from pathlib import Path
 
 # ── Input / output directories ────────────────────────────────────────────────
-INPUT_DIR  = Path("/home/user/gcs/gaandeev_ntop/Task2_Files_DoE_pipeline/test/raf/data")
-OUTPUT_DIR = Path("/home/user/gcs/gaandeev_ntop/Task2_Files_DoE_pipeline/test/zarr_data")
+INPUT_DIR  = Path("/data/skand/rafl/batches")
+OUTPUT_DIR = Path("/data/skand/rafl/data_nemo")
 
 # ── File names inside each case folder ────────────────────────────────────────
 STL_FILENAME          = "mesh.stl"
@@ -68,7 +68,7 @@ FORCE_CSV_FILENAME    = "force.csv"
 
 # ── Subfolder inside each job folder that contains the files ──────────────────
 # Set to "" (empty string) if the files are directly in the job folder.
-DATA_SUBFOLDER = "output"
+DATA_SUBFOLDER = "outputs"
 
 # ── Column indices in each CSV (0-based) ─────────────────────────────────────
 # pressure.csv expected columns: x, y, z, p

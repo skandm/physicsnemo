@@ -31,6 +31,14 @@ import time
 import os
 import re
 from typing import Literal, Any
+import warp as wp
+import types as _types, sys as _sys 
+if not hasattr(wp, "context"):
+    _ctx = _types.ModuleType("warp.context")
+    _ctx.Device = object  # used as type annotation only, not at runtime
+    wp.context = _ctx
+    _sys.modules["warp.context"] = _ctx
+
 from tabulate import tabulate
 
 import numpy as np

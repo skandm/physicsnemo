@@ -18,12 +18,12 @@
 # │            Project Details                │
 # └───────────────────────────────────────────┘  
 project: # Project name
-  name: RAF_CFD
+  name: RAF_SURK   
   
-exp_tag: 4 # Experiment tag
+exp_tag: 1 # Experiment tag
 # Main output directory.
-project_dir: /home/user/gcs/gaandeev_ntop/Task2_Files_DoE_pipeline/test/domino/${project.name}/
-output: /home/user/gcs/gaandeev_ntop/Task2_Files_DoE_pipeline/test/domino/${project.name}/${exp_tag}
+project_dir: /data/skand/rafl/domino/${project.name}/
+output: /data/skand/rafl/domino/${project.name}/${exp_tag}
 
 hydra: # Hydra config
   run:
@@ -106,7 +106,7 @@ model:
   interp_res: [256, 128, 128] # resolution of latent space 128, 64, 48
   use_sdf_in_basis_func: true # SDF in basis function network
   volume_points_sample: 32768 # Number of points to sample in volume per epoch
-  surface_points_sample: 8192 # Number of points to sample on surface per epoch
+  surface_points_sample: 16364 # Number of points to sample on surface per epoch
   surface_sampling_algorithm: area_weighted #random or area_weighted
   geom_points_sample: 100000 # Number of points to sample on STL per epoch
   num_neighbors_surface: 7 # How many neighbors on surface?
