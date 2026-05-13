@@ -61,16 +61,23 @@ INPUT_DIR  = Path("/home/user/gcs/gaandeev_ntop/Task2_Files_DoE_pipeline/test/ra
 OUTPUT_DIR = Path("/home/user/gcs/gaandeev_ntop/Task2_Files_DoE_pipeline/test/zarr_data")
 
 # ── File names inside each case folder ────────────────────────────────────────
-STL_FILENAME      = "mesh.stl"
+STL_FILENAME          = "mesh.stl"
 PRESSURE_CSV_FILENAME = "pressure.csv"
 VELOCITY_CSV_FILENAME = "velocity.csv"
+FORCE_CSV_FILENAME    = "force.csv"
+
+# ── Subfolder inside each job folder that contains the files ──────────────────
+# Set to "" (empty string) if the files are directly in the job folder.
+DATA_SUBFOLDER = "output"
 
 # ── Column indices in each CSV (0-based) ─────────────────────────────────────
 # pressure.csv expected columns: x, y, z, p
 # velocity.csv expected columns: x, y, z, vx, vy, vz
+# force.csv    expected columns: x, y, z, fx, fy, fz
 COORD_COLS    = [0, 1, 2]
 PRESSURE_COLS = [3]
 VELOCITY_COLS = [3, 4, 5]
+FORCE_COLS    = [3, 4, 5]
 
 # Set to True if CSVs have a header row, False if they are purely numeric
 CSV_HAS_HEADER = False
@@ -103,13 +110,15 @@ def inspect_csv(input_dir: Path):
         sys.exit(1)
 
     first = case_dirs[0]
-    p_csv = first / PRESSURE_CSV_FILENAME
-    v_csv = first / VELOCITY_CSV_FILENAME
+    data_dir = first / DATA_SUBFOLDER if DATA_SUBFOLDER else first
+    p_csv = data_dir / PRESSURE_CSV_FILENAME
+    v_csv = data_dir / VELOCITY_CSV_FILENAME
+    f_csv = data_dir / FORCE_CSV_FILENAME
 
     header = 0 if CSV_HAS_HEADER else None
 
-    print(f"\n── CSV inspection (case: {first.name}) ──")
-    for label, path in [("pressure.csv", p_csv), ("velocity.csv", v_csv)]:
+    print(f"\n── CSV inspection (case: {first.name}, subfolder: {DATA_SUBFOLDER or '.'}) ──")
+    for label, path in [("pressure.csv", p_csv), ("velocity.csv", v_csv), ("force.csv", f_csv)]:
         if not path.exists():
             print(f"  {label}: NOT FOUND at {path}")
             continue
@@ -169,9 +178,11 @@ def read_stl(stl_path: Path, unit_scale: float = 1.0):
 def read_csv_surface(
     pressure_csv: Path,
     velocity_csv: Path,
+    force_csv: Path,
     coord_cols: list,
     pressure_cols: list,
     velocity_cols: list,
+    force_cols: list,
     has_header: bool,
     unit_scale: float,
 ) -> dict:
@@ -180,45 +191,50 @@ def read_csv_surface(
     Args:
         pressure_csv:  Path to pressure CSV (columns: x, y, z, p, ...)
         velocity_csv:  Path to velocity CSV (columns: x, y, z, vx, vy, vz, ...)
-        coord_cols:    Column indices for x, y, z coordinates (same in both files)
+        force_csv:     Path to force CSV    (columns: x, y, z, fx, fy, fz, ...)
+        coord_cols:    Column indices for x, y, z coordinates (same in all files)
         pressure_cols: Column indices for pressure values in pressure_csv
         velocity_cols: Column indices for velocity values in velocity_csv
+        force_cols:    Column indices for force values in force_csv
         has_header:    True if CSVs have a header row
         unit_scale:    Multiply coordinates by this factor (e.g. 0.001 for mm→m)
 
     Returns:
         dict with:
             "surface_mesh_centers": float32 array [N, 3]
-            "surface_fields":       float32 array [N, 4]  — [p, vx, vy, vz]
+            "surface_fields":       float32 array [N, 7]  — [p, vx, vy, vz, fx, fy, fz]
     """
-    header = 0 if has_header else None
+    skiprows = 1 if has_header else 0
 
-    p_arr = np.loadtxt(str(pressure_csv), delimiter=",", skiprows=1 if has_header else 0)
-    v_arr = np.loadtxt(str(velocity_csv), delimiter=",", skiprows=1 if has_header else 0)
+    p_arr = np.loadtxt(str(pressure_csv), delimiter=",", skiprows=skiprows)
+    v_arr = np.loadtxt(str(velocity_csv), delimiter=",", skiprows=skiprows)
+    f_arr = np.loadtxt(str(force_csv),    delimiter=",", skiprows=skiprows)
 
-    # Extract coordinates from pressure CSV; assert they match velocity CSV
+    # Coordinates from pressure CSV; assert they match velocity and force CSVs
     p_coords = p_arr[:, coord_cols].astype(np.float32)
     v_coords = v_arr[:, coord_cols].astype(np.float32)
+    f_coords = f_arr[:, coord_cols].astype(np.float32)
 
-    if p_coords.shape[0] != v_coords.shape[0]:
-        raise ValueError(
-            f"Row count mismatch: pressure.csv has {p_coords.shape[0]} rows, "
-            f"velocity.csv has {v_coords.shape[0]} rows"
-        )
-
-    max_coord_diff = np.abs(p_coords - v_coords).max()
-    if max_coord_diff > 1e-6:
-        raise ValueError(
-            f"Coordinate mismatch between pressure.csv and velocity.csv "
-            f"(max diff = {max_coord_diff:.2e}). Check that both files share the same grid."
-        )
+    for other_name, other_coords in [("velocity.csv", v_coords), ("force.csv", f_coords)]:
+        if p_coords.shape[0] != other_coords.shape[0]:
+            raise ValueError(
+                f"Row count mismatch: pressure.csv has {p_coords.shape[0]} rows, "
+                f"{other_name} has {other_coords.shape[0]} rows"
+            )
+        max_diff = np.abs(p_coords - other_coords).max()
+        if max_diff > 1e-6:
+            raise ValueError(
+                f"Coordinate mismatch between pressure.csv and {other_name} "
+                f"(max diff = {max_diff:.2e}). Check that all files share the same grid."
+            )
 
     coords = p_coords * unit_scale  # [N, 3]
 
-    # Extract field columns and stack: [p, vx, vy, vz] → [N, 4]
-    pressure = p_arr[:, pressure_cols].astype(np.float32)   # [N, n_p]
-    velocity = v_arr[:, velocity_cols].astype(np.float32)   # [N, n_v]
-    surface_fields = np.concatenate([pressure, velocity], axis=1)  # [N, 4]
+    # Stack fields: [p, vx, vy, vz, fx, fy, fz] → [N, 7]
+    pressure = p_arr[:, pressure_cols].astype(np.float32)   # [N, 1]
+    velocity = v_arr[:, velocity_cols].astype(np.float32)   # [N, 3]
+    force    = f_arr[:, force_cols].astype(np.float32)      # [N, 3]
+    surface_fields = np.concatenate([pressure, velocity, force], axis=1)  # [N, 7]
 
     # Drop rows with NaN or Inf
     valid_mask = np.isfinite(surface_fields).all(axis=1) & np.isfinite(coords).all(axis=1)
@@ -230,7 +246,7 @@ def read_csv_surface(
 
     return {
         "surface_mesh_centers": coords,         # [N, 3]
-        "surface_fields":       surface_fields, # [N, 4]
+        "surface_fields":       surface_fields, # [N, 7]
     }
 
 
@@ -271,11 +287,15 @@ def convert_case(
         print(f"  SKIP (already exists): {out_path.name}")
         return True
 
-    stl_path = case_dir / STL_FILENAME
-    p_csv    = case_dir / PRESSURE_CSV_FILENAME
-    v_csv    = case_dir / VELOCITY_CSV_FILENAME
+    # Resolve data subfolder (e.g. job_folder/output/)
+    data_dir = case_dir / DATA_SUBFOLDER if DATA_SUBFOLDER else case_dir
 
-    for path, label in [(stl_path, STL_FILENAME), (p_csv, PRESSURE_CSV_FILENAME), (v_csv, VELOCITY_CSV_FILENAME)]:
+    stl_path = data_dir / STL_FILENAME
+    p_csv    = data_dir / PRESSURE_CSV_FILENAME
+    v_csv    = data_dir / VELOCITY_CSV_FILENAME
+    f_csv    = data_dir / FORCE_CSV_FILENAME
+
+    for path in [stl_path, p_csv, v_csv, f_csv]:
         if not path.exists():
             print(f"  ERROR: {path} not found — skipping")
             return False
@@ -285,9 +305,11 @@ def convert_case(
         csv_data = read_csv_surface(
             pressure_csv  = p_csv,
             velocity_csv  = v_csv,
+            force_csv     = f_csv,
             coord_cols    = COORD_COLS,
             pressure_cols = PRESSURE_COLS,
             velocity_cols = VELOCITY_COLS,
+            force_cols    = FORCE_COLS,
             has_header    = CSV_HAS_HEADER,
             unit_scale    = STL_UNIT_SCALE,
         )
@@ -335,7 +357,7 @@ def convert_case(
     n_ch    = csv_data["surface_fields"].shape[1]
     print(
         f"  OK: stl={n_verts} verts / {n_faces} faces | "
-        f"surface={n_surf} pts / {n_ch} channels"
+        f"surface={n_surf} pts / {n_ch} channels [p, vx, vy, vz, fx, fy, fz]"
     )
     return True
 

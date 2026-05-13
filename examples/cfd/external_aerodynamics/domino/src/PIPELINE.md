@@ -60,16 +60,22 @@ data/
 ```
 
 *CSV-based (LBM cut-cell / surface training):*
+
+Files live inside an `output/` subfolder within each job folder (set `DATA_SUBFOLDER = "output"`
+in `csv_to_zarr.py`; set it to `""` if files are directly in the job folder).
 ```
-data/
-  0/
+job_0/
+  output/
     mesh.stl           # surface geometry
     pressure.csv       # columns: x, y, z, p
     velocity.csv       # columns: x, y, z, vx, vy, vz
-  1/
+    force.csv          # columns: x, y, z, fx, fy, fz
+job_1/
+  output/
     mesh.stl
     pressure.csv
     velocity.csv
+    force.csv
   ...
 ```
 
@@ -146,10 +152,14 @@ Done: 50 converted, 0 failed
 
 **Script:** `csv_to_zarr.py`
 
-Converts each case folder (STL + two CSV files) into a `.zarr` file for surface
-or combined DoMINO training. The CSVs contain LBM cut-cell centers (voxels
-intersected by the STL surface). Surface normals and areas are derived by
-projecting each cut-cell center onto the nearest STL face.
+Converts each case folder (STL + three CSV files) into a `.zarr` file for
+surface or combined DoMINO training. The CSVs contain LBM cut-cell centers
+(voxels intersected by the STL surface). Surface normals and areas are derived
+by projecting each cut-cell center onto the nearest STL face.
+
+DoMINO supports training for **any combination of surface fields** — pressure,
+velocity, and force are all valid simultaneously. They are stacked into a single
+`surface_fields` array in the column order you declare.
 
 Zarr stores are opened with `mode="a"` (append), so you can run
 `convert_to_zarr.py` first and then `csv_to_zarr.py` to produce a single zarr
@@ -161,19 +171,28 @@ Edit the constants at the top of `csv_to_zarr.py`:
 
 | Constant | Description |
 |---|---|
-| `INPUT_DIR` | Parent folder containing the numbered case folders |
+| `INPUT_DIR` | Parent folder containing the job folders |
 | `OUTPUT_DIR` | Where `.zarr` files will be written |
+| `DATA_SUBFOLDER` | Subfolder inside each job folder that contains the files (e.g. `"output"`); set to `""` if files are directly in the job folder |
 | `STL_FILENAME` | STL file name (default: `mesh.stl`) |
 | `PRESSURE_CSV_FILENAME` | Pressure CSV file name (default: `pressure.csv`) |
 | `VELOCITY_CSV_FILENAME` | Velocity CSV file name (default: `velocity.csv`) |
-| `COORD_COLS` | 0-based column indices for x, y, z in both CSVs (default: `[0, 1, 2]`) |
-| `PRESSURE_COLS` | Column indices for pressure values (default: `[3]`) |
-| `VELOCITY_COLS` | Column indices for velocity values (default: `[3, 4, 5]`) |
+| `FORCE_CSV_FILENAME` | Force CSV file name (default: `force.csv`) |
+| `COORD_COLS` | 0-based column indices for x, y, z in all CSVs (default: `[0, 1, 2]`) |
+| `PRESSURE_COLS` | Column indices for pressure values in pressure.csv (default: `[3]`) |
+| `VELOCITY_COLS` | Column indices for velocity values in velocity.csv (default: `[3, 4, 5]`) |
+| `FORCE_COLS` | Column indices for force values in force.csv (default: `[3, 4, 5]`) |
 | `CSV_HAS_HEADER` | `True` if CSVs have a header row, `False` if purely numeric |
-| `STL_UNIT_SCALE` | `0.001` if STL/CSV coordinates are in mm, `1.0` if in metres |
+| `STL_UNIT_SCALE` | `0.001` if STL/CSV coordinates are in mm, `1.0` if already in metres |
 | `INLET_VELOCITY` | Inlet velocity in m/s |
 | `AIR_DENSITY` | Air density in kg/m³ (default: `1.225`) |
-| `SKIP_EXISTING` | `True` to skip already-converted cases |
+| `SKIP_EXISTING` | `True` to skip already-converted cases (safe for re-runs) |
+
+If your CSVs have a different column layout (extra header columns, different
+ordering), adjust `COORD_COLS` / `PRESSURE_COLS` / `VELOCITY_COLS` / `FORCE_COLS`
+accordingly. The one-time CSV inspection printed at startup shows the first 3
+rows of each file — use those to verify the indices before committing to a full
+run.
 
 #### Zarr keys written
 
@@ -181,14 +200,14 @@ Edit the constants at the top of `csv_to_zarr.py`:
 |---|---|---|
 | `stl_coordinates` | `[N_verts, 3]` | STL vertex positions |
 | `stl_centers` | `[N_faces, 3]` | STL face centres |
-| `stl_faces` | `[N_faces*3]` | Triangle vertex indices |
+| `stl_faces` | `[N_faces*3]` | Triangle vertex indices (flattened) |
 | `stl_areas` | `[N_faces]` | Triangle areas (m²) |
-| `surface_mesh_centers` | `[N, 3]` | Cut-cell centre coordinates |
-| `surface_normals` | `[N, 3]` | Outward face normals (from nearest STL face) |
-| `surface_areas` | `[N]` | Face areas inherited from nearest STL face |
-| `surface_fields` | `[N, 4]` | Fields in column order `[p, vx, vy, vz]` |
+| `surface_mesh_centers` | `[N, 3]` | Cut-cell centre coordinates (metres) |
+| `surface_normals` | `[N, 3]` | Outward face normals (inherited from nearest STL face) |
+| `surface_areas` | `[N]` | Face areas inherited from nearest STL face (m²) |
+| `surface_fields` | `[N, 7]` | Fields in column order `[p, vx, vy, vz, fx, fy, fz]` |
 | `global_params_values` | `[2, 1]` | `[[inlet_velocity], [air_density]]` |
-| `global_params_reference` | `[2, 1]` | Same as above |
+| `global_params_reference` | `[2, 1]` | Same as above (used as normalisation reference) |
 
 #### Usage
 
@@ -196,54 +215,73 @@ Edit the constants at the top of `csv_to_zarr.py`:
 python csv_to_zarr.py
 ```
 
-The script runs a one-time CSV inspection (row/column counts, first 3 rows)
-before converting all cases.
+The script runs a one-time CSV inspection (row counts, column counts, first 3
+rows of each file) before converting all cases. **Read this output carefully**
+before the conversion proceeds — it is the fastest way to catch column index
+errors or unit mismatches.
 
 #### Expected output
 ```
-Found 50 cases in /data/raw
+Found 50 cases in /data/jobs
+STL unit scale: 0.001
+CSV has header: False
 
-── CSV inspection (case: 0) ──
+── CSV inspection (case: job_0, subfolder: output) ──
   pressure.csv: 82341 rows, 4 columns
     first 3 rows:
-    ...
+     0.123  0.456  0.789  101325.0
+     ...
   velocity.csv: 82341 rows, 6 columns
-    ...
+    first 3 rows:
+     0.123  0.456  0.789  10.2  0.1  -0.3
+     ...
+  force.csv: 82341 rows, 6 columns
+    first 3 rows:
+     0.123  0.456  0.789  0.012  -0.003  0.001
+     ...
 
-[0]
-  OK: stl=12450 verts / 24896 faces | surface=82341 pts / 4 channels
-[1]
-  OK: stl=11980 verts / 23956 faces | surface=80122 pts / 4 channels
+[job_0]
+  OK: stl=24896 verts / 49788 faces | surface=82341 pts / 7 channels [p, vx, vy, vz, fx, fy, fz]
+[job_1]
+  OK: stl=24102 verts / 48200 faces | surface=80122 pts / 7 channels [p, vx, vy, vz, fx, fy, fz]
 ...
 Done: 50 converted, 0 failed
 ```
 
-> **Note:** The column order of `surface_fields` is `[p, vx, vy, vz]` and must
-> match the `variables.surface.solution` section in `config.yaml`.
+> **Note:** The column order of `surface_fields` is `[p, vx, vy, vz, fx, fy, fz]`
+> and must match the `variables.surface.solution` section in `config.yaml`.
 
 ---
 
 ## Step 2 — Validate Zarr Files
 
+> **Surface vs volume:** `validate_zarr.py` checks for volume keys
+> (`volume_mesh_centers`, `volume_fields`). For **surface-only** zarr produced
+> by `csv_to_zarr.py`, skip to `inspect_zarr.py` below — it works for any key set.
+
+---
+
+### Step 2a — Structural validation (volume training only)
+
 **Script:** `validate_zarr.py`
 
 Checks every `.zarr` case for correct keys, shapes, dtypes, NaN/Inf values,
-and geometry consistency. Run this before doing anything else with your data.
+and geometry consistency.
 
-### CLI arguments
+#### CLI arguments
 
 | Argument | Required | Description |
 |---|---|---|
 | `--data_dir` | yes | Directory containing `.zarr` case folders |
 | `--verbose` / `-v` | no | Print per-case stats (velocity range, pressure range, point counts) |
 
-### Usage
+#### Usage
 ```bash
 python validate_zarr.py --data_dir /data/zarr
 python validate_zarr.py --data_dir /data/zarr --verbose
 ```
 
-### Expected output
+#### Expected output
 ```
 Validating 50 cases in /data/zarr
 
@@ -256,6 +294,42 @@ Result: 49 passed, 1 failed
 ```
 
 Fix any failed cases before continuing.
+
+---
+
+### Step 2b — Field inspection (surface or any training)
+
+**Script:** `inspect_zarr.py`
+
+Prints key names, shapes, dtypes, and value ranges for every array in the zarr.
+Works for surface, volume, or combined zarr stores. Use this as the primary
+verification tool for surface-only data produced by `csv_to_zarr.py`.
+
+#### Usage
+```bash
+# Quick check on 3 cases — shapes, dtypes, value ranges:
+python inspect_zarr.py --data_dir /data/zarr_data --max_cases 3
+
+# Check only surface-related arrays:
+python inspect_zarr.py --data_dir /data/zarr_data --fields surface
+
+# Save distribution plots to disk:
+python inspect_zarr.py --data_dir /data/zarr_data --save_dir /data/plots
+```
+
+#### What to verify for surface data
+
+| Key | Expected shape | Check |
+|---|---|---|
+| `surface_mesh_centers` | `[N, 3]` | Coordinate range matches your geometry in metres |
+| `surface_normals` | `[N, 3]` | All values between −1 and 1; per-row magnitude ≈ 1 |
+| `surface_areas` | `[N]` | All positive; order of magnitude consistent with STL face size |
+| `surface_fields` | `[N, 7]` | No NaN/Inf; columns 0 (pressure), 1-3 (velocity), 4-6 (force) in physically reasonable ranges |
+| `stl_coordinates` | `[M, 3]` | Same coordinate range as `surface_mesh_centers` |
+
+> **If coordinates look wrong (e.g. 1000× too large):** your `STL_UNIT_SCALE`
+> is incorrect. Re-run `csv_to_zarr.py` with `STL_UNIT_SCALE = 0.001`
+> (for mm → metres) and `SKIP_EXISTING = False`.
 
 ---
 
@@ -280,8 +354,8 @@ spotting unit errors, outliers, and understanding the data ranges before trainin
 # Plot all fields interactively:
 python inspect_zarr.py --data_dir /data/zarr
 
-# Only check velocity and pressure, save to disk:
-python inspect_zarr.py --data_dir /data/zarr --fields volume_fields stl_areas --save_dir /data/plots
+# Surface training — check only surface arrays, save plots:
+python inspect_zarr.py --data_dir /data/zarr --fields surface_fields surface_areas --save_dir /data/plots
 
 # Quick check on 5 cases:
 python inspect_zarr.py --data_dir /data/zarr --max_cases 5
@@ -537,22 +611,44 @@ variables:
     solution: {}           # empty — not used for volume-only training
 ```
 
-**Surface training** (`csv_to_zarr.py` data):
+**Surface training** (`csv_to_zarr.py` data — pressure + velocity + force):
 ```yaml
+project:
+  name: LBM_Surface
+
+exp_tag: 1   # increment for each new training run
+
+output: /path/to/outputs/${project.name}/${exp_tag}
+
+data:
+  input_dir:     /path/to/zarr_data      # train cases (from split_zarr.py)
+  input_dir_val: /path/to/zarr_val       # val cases  (from split_zarr.py)
+  scaling_factors: /path/to/scaling_factors/scaling_factors.pkl
+  max_samples_for_statistics: 200        # set to total number of training cases
+  bounding_box_surface:                  # from check_bounds.py (STL surface bounds)
+    min: [x_min, y_min, z_min]
+    max: [x_max, y_max, z_max]
+  bounding_box:                          # for surface-only, use the same bounds as bounding_box_surface
+    min: [x_min, y_min, z_min]
+    max: [x_max, y_max, z_max]
+
 model:
-  model_type: surface                     # volume / surface / combined
+  model_type: surface                    # volume / surface / combined
   use_surface_normals: true
   use_surface_area: true
   surface_sampling_algorithm: area_weighted
+  surface_points_sample: 8192
   loss_function:
-    area_weighing_factor: 54              # from check_areas.py
+    area_weighing_factor: ???            # from check_areas.py (≈ 1 / max_face_area)
 
 variables:
   surface:
     solution:
-      # Column order must match surface_fields written by csv_to_zarr.py: [p, vx, vy, vz]
+      # Column order must match surface_fields written by csv_to_zarr.py:
+      #   0: pressure (scalar), 1-3: velocity (vector), 4-6: force (vector)
       pressure: scalar     # column 0
       velocity: vector     # columns 1, 2, 3
+      force: vector        # columns 4, 5, 6
   volume:
     solution: {}           # empty — not used for surface-only training
 ```
@@ -576,9 +672,19 @@ compute min/max with outlier filtering (±9σ). Expect roughly 2× the time of a
 single read pass.
 
 ### Prerequisites
+
+**Run after `split_zarr.py`** — point `--data_dir` at the training split only,
+not the full dataset.
+
 `config.yaml` must have the following set before running:
-- `model.model_type` — determines which fields to compute stats for
+- `model.model_type` — determines which fields to compute stats for (`surface`, `volume`, or `combined`)
 - `data.bounding_box` and `data.bounding_box_surface` — from `check_bounds.py`
+- `variables.surface.solution` (for surface/combined) — fields must match `surface_fields` column order
+
+After computing, check `scaling_factors_summary.txt`. For each field, verify:
+- Ranges are physically reasonable (e.g. pressure in Pa, not Pa × 1000)
+- No field has `min == max` (would indicate all-zero or all-constant data)
+- No field has a range spanning more than ~6 orders of magnitude (indicates a unit mismatch)
 
 ### CLI arguments
 
@@ -637,15 +743,19 @@ pip install pynvml
 |---|---|
 | `exp_tag` | Experiment number — increment for each new run |
 | `train.epochs` | Number of training epochs |
-| `train.optimizer.lr` | Learning rate |
+| `train.optimizer.lr` | Learning rate (default `0.001`) |
 | `train.lr_scheduler.name` | `MultiStepLR` or `CosineAnnealingLR` |
 | `model.model_type` | `volume`, `surface`, or `combined` |
-| `model.volume_points_sample` | Points sampled per epoch during training |
+| `model.surface_points_sample` | Surface points sampled per epoch (default `8192`) |
+| `model.volume_points_sample` | Volume points sampled per epoch (volume/combined only) |
+| `model.use_surface_normals` | Include surface normals in geometry encoding (set `true` for surface training) |
+| `model.use_surface_area` | Include face areas in surface loss weighting (set `true` for surface training) |
+| `model.surface_sampling_algorithm` | `area_weighted` (recommended) or `random` |
 | `model.normalization` | `min_max_scaling` or `mean_std_scaling` |
 
 ### Output directory structure
 ```
-outputs/RAF_CFD/2/
+outputs/LBM_Surface/1/
   models/          # checkpoints (DoMINO.0.{epoch}.mdlus)
   tensorboard/     # TensorBoard event files
   hydra/           # saved config for reproducibility
@@ -659,22 +769,36 @@ outputs/RAF_CFD/2/
 TensorBoard events are written to `outputs/<project.name>/<exp_tag>/tensorboard/`
 during training. The following metrics are logged:
 
-- `Loss/train` — training loss per epoch
-- `L2 Metrics/train/<field>` — per-field L2 error on training set
-- `L2 Metrics/val/<field>` — per-field L2 error on validation set
+- `Loss/train` — total training loss per epoch (should decrease steadily)
+- `L2 Metrics/train/<field>` — per-field L2 error on the training set
+- `L2 Metrics/val/<field>` — per-field L2 error on the validation set
+
+For surface training with pressure + velocity + force, the per-field metrics are:
+
+| Metric | What to watch for |
+|---|---|
+| `L2 Metrics/*/pressure` | Should reach < 5% relative error within ~100 epochs |
+| `L2 Metrics/*/velocity` | Similar convergence to pressure |
+| `L2 Metrics/*/force` | May converge more slowly — force has higher spatial frequency |
+| `L2 Metrics/val/*` vs `L2 Metrics/train/*` | Growing gap = overfitting; reduce LR or add more data |
 
 ### Launch TensorBoard
 ```bash
-tensorboard --logdir outputs/RAF_CFD/2/tensorboard
+tensorboard --logdir outputs/LBM_Surface/1/tensorboard
 ```
 
 Then open `http://localhost:6006` in your browser.
 
 **To compare multiple experiments:**
 ```bash
-tensorboard --logdir outputs/RAF_CFD
+tensorboard --logdir outputs/LBM_Surface
 ```
 TensorBoard will show all `exp_tag` runs side by side.
+
+**If training loss is not decreasing:**
+- Check `area_weighing_factor` — run `check_areas.py` to get the correct value
+- Check bounding boxes — run `check_bounds.py` to verify they cover the geometry
+- Check `scaling_factors_summary.txt` — any field with a range spanning > 6 orders of magnitude indicates a unit issue in the CSV data
 
 **From WSL, access in Windows browser** at `http://localhost:6006` — the port
 is forwarded automatically.
@@ -802,19 +926,26 @@ The CLI (`python run_inference.py ...`) is unchanged and internally instantiates
 > Set `VOLUME_FIELD_NAMES = {}` and re-run to get the correct names.
 
 **`Row count mismatch` or `Coordinate mismatch` during CSV conversion**
-> `pressure.csv` and `velocity.csv` must have the same number of rows and the
-> same x, y, z coordinates. Verify that both files come from the same simulation
-> output. The script asserts coordinate agreement to within 1e-6 before stacking fields.
+> All three CSVs (`pressure.csv`, `velocity.csv`, `force.csv`) must have the
+> same number of rows and the same x, y, z coordinates (within 1e-6). Verify
+> that all files come from the same simulation output and the same grid snapshot.
 
 **`IndexError` or wrong values after CSV conversion**
-> Check `COORD_COLS`, `PRESSURE_COLS`, and `VELOCITY_COLS` in `csv_to_zarr.py`
-> against the actual column layout of your CSVs. The one-time inspection printed
-> at startup shows the first 3 rows — use those to verify the indices.
-> If your CSVs have a header row, set `CSV_HAS_HEADER = True`.
+> Check `COORD_COLS`, `PRESSURE_COLS`, `VELOCITY_COLS`, and `FORCE_COLS` in
+> `csv_to_zarr.py` against the actual column layout of your CSVs. The one-time
+> inspection printed at startup shows the first 3 rows of each file — use those
+> to verify the indices. If your CSVs have a header row, set `CSV_HAS_HEADER = True`.
+
+**`force.csv not found` error**
+> Check `DATA_SUBFOLDER` in `csv_to_zarr.py`. If your files live in
+> `job_folder/output/`, set `DATA_SUBFOLDER = "output"`. If they are directly
+> in the job folder, set `DATA_SUBFOLDER = ""`.
 
 **`Missing key` errors in `validate_zarr.py`**
-> A required array is missing from a zarr case — the conversion likely failed or
-> was incomplete for that case. Re-run `convert_to_zarr.py` with `SKIP_EXISTING = False`.
+> `validate_zarr.py` checks for **volume** keys and will always fail for
+> surface-only zarr. Use `inspect_zarr.py` instead for surface data.
+> If you are running volume training and get this error, re-run
+> `convert_to_zarr.py` with `SKIP_EXISTING = False`.
 
 **`scaling_factors.pkl` not found during training**
 > Run `compute_statistics.py` first, and make sure `data.scaling_factors` in
@@ -831,3 +962,4 @@ The CLI (`python run_inference.py ...`) is unchanged and internally instantiates
 > - Check `area_weighing_factor` — run `check_areas.py` to verify the value
 > - Check bounding boxes — run `check_bounds.py` to verify `bounding_box` covers the full domain
 > - Inspect data quality — run `inspect_zarr.py` to check for outliers or unit issues
+> - Check `scaling_factors_summary.txt` — any field with range spanning > 6 orders of magnitude indicates a unit mismatch in the CSV data
