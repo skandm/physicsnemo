@@ -69,22 +69,22 @@ variables:
 # │         Data Configs                      │
 # └───────────────────────────────────────────┘  
 data: # Input directory for training and validation data
-  input_dir: /home/user/gcs/gaandeev_ntop/Task2_Files_DoE_pipeline/test/zarr_data
-  input_dir_val: /home/user/gcs/gaandeev_ntop/Task2_Files_DoE_pipeline/test/zarr_val
-  bounding_box_surface: # Bounding box of the CFD volume domain (meters)
-    min: [0.00, -5.9, -1.69]
-    max: [9.66,  5.9,  3.39]
-  bounding_box: # Bounding box of the aircraft surface (meters)
-    min: [-2.41, -8.26, -5.09]
-    max: [20.22,  9.63,  5.37]
+  input_dir: /data/skand/rafl/data_nemo
+  input_dir_val: /data/skand/rafl/zarr_val
+  bounding_box_surface: # Bounding box of the STL surface (meters)
+    min: [-0.00, -5.90, -1.69]
+    max: [9.66,   5.90,  3.39]
+  bounding_box: # For surface-only training, same as bounding_box_surface
+    min: [-0.00, -5.90, -1.69]
+    max: [9.66,   5.90,  3.39]
   gpu_preprocessing: true
   gpu_output: true
   normalize_coordinates: true
   sample_in_bbox: true
   sampling: true
-  scaling_factors: /home/user/gcs/gaandeev_ntop/Task2_Files_DoE_pipeline/test/scaling_factors/scaling_factors.pkl
+  scaling_factors: /data/skand/rafl/scaling_factors/scaling_factors.pkl
   volume_sample_from_disk: false 
-  max_samples_for_statistics: 290
+  max_samples_for_statistics: 259
 
 # ┌───────────────────────────────────────────┐
 # │          Domain Parallelism Settings      │
@@ -102,7 +102,7 @@ model:
   activation: "gelu" # "relu" or "gelu"
   loss_function:
     loss_type: "mse" # mse or rmse
-    area_weighing_factor: 43 # Generally inverse of maximum area (max STL face area ~0.012–0.017 m² → 1/0.012 ≈ 83)
+    area_weighing_factor: 43 # 1 / max_face_area = 1 / 0.0232 ≈ 43 (from check_areas.py)
   interp_res: [256, 128, 128] # resolution of latent space 128, 64, 48
   use_sdf_in_basis_func: true # SDF in basis function network
   volume_points_sample: 32768 # Number of points to sample in volume per epoch

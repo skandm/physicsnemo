@@ -31,6 +31,16 @@ Usage:
     python compute_statistics.py --data_dir /data/zarr_train --output /data/scaling_factors/scaling_factors.pkl --force
 """
 
+# Warp 1.x compatibility shim: physicsnemo uses wp.context.Device as a type
+# annotation which was removed in warp 1.0. Recreate it as a lightweight module.
+import warp as wp
+import types as _types, sys as _sys
+if not hasattr(wp, "context"):
+    _ctx = _types.ModuleType("warp.context")
+    _ctx.Device = object  # used as type annotation only, not at runtime
+    wp.context = _ctx
+    _sys.modules["warp.context"] = _ctx
+
 import argparse
 import os
 import time
@@ -120,9 +130,11 @@ def main():
     start_time = time.perf_counter()
 
     model_type = cfg.model.model_type
-    target_keys = ["stl_centers", "volume_mesh_centers", "volume_fields"]
+    target_keys = ["stl_centers"]
+    if model_type in ("volume", "combined"):
+        target_keys += ["volume_mesh_centers", "volume_fields"]
     if model_type in ("surface", "combined"):
-        target_keys += ["surface_fields", "surface_mesh_centers"]
+        target_keys += ["surface_mesh_centers", "surface_fields"]
 
     mean, std, min_val, max_val = compute_scaling_factors(
         cfg=cfg,
