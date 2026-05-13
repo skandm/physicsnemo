@@ -336,12 +336,17 @@ def load_scaling_factors(
         )
 
     if cfg.model.normalization == "min_max_scaling":
-        vol_factors = np.asarray(
-            [
-                scaling_factors.max_val["volume_fields"],
-                scaling_factors.min_val["volume_fields"],
-            ]
-        )
+        if "volume_fields" in scaling_factors.max_val:
+            vol_factors = np.asarray(
+                [
+                    scaling_factors.max_val["volume_fields"],
+                    scaling_factors.min_val["volume_fields"],
+                ]
+            )
+        else:
+            # Surface-only training: volume_fields not in pickle.
+            # Use a dummy array so downstream code that reads vol_factors.dtype works.
+            vol_factors = np.ones((2, 1), dtype=np.float32)
         if "surface_fields" in scaling_factors.max_val:
             surf_factors = np.asarray(
                 [
@@ -352,12 +357,16 @@ def load_scaling_factors(
         else:
             surf_factors = None
     elif cfg.model.normalization == "mean_std_scaling":
-        vol_factors = np.asarray(
-            [
-                scaling_factors.mean["volume_fields"],
-                scaling_factors.std["volume_fields"],
-            ]
-        )
+        if "volume_fields" in scaling_factors.mean:
+            vol_factors = np.asarray(
+                [
+                    scaling_factors.mean["volume_fields"],
+                    scaling_factors.std["volume_fields"],
+                ]
+            )
+        else:
+            # Surface-only training: dummy volume factors
+            vol_factors = np.ones((2, 1), dtype=np.float32)
         if "surface_fields" in scaling_factors.mean:
             surf_factors = np.asarray(
                 [
