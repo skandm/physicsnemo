@@ -1,0 +1,63 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: POD_NAME
+  labels:
+    app: ntop-training
+spec:
+  restartPolicy: Never
+
+  imagePullSecrets:
+    - name: gcr-ntop-training
+
+  volumes:
+    # Shared memory for PyTorch DataLoader multi-worker
+    - name: dshm
+      emptyDir:
+        medium: Memory
+        sizeLimit: 8Gi
+
+  containers:
+    - name: training
+      image: us-central1-docker.pkg.dev/tests-315022/ntop-training/ntop-training:IMAGE_TAG
+      imagePullPolicy: Always
+
+      # Override to run your training/inference script
+      command: ["python"]
+      args: ["/physicsnemo/examples/domino/train.py"]
+
+      resources:
+        requests:
+          nvidia.com/gpu: "1"
+          memory: "16Gi"
+          cpu: "4"
+        limits:
+          nvidia.com/gpu: "1"
+          memory: "32Gi"
+          cpu: "8"
+
+      volumeMounts:
+        - name: dshm
+          mountPath: /dev/shm
+
+      env:
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        - name: GOOGLE_APPLICATION_CREDENTIALS
+          value: /secrets/key-ntop-training.json
+        - name: WANDB_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: wandb-secret
+              key: api-key
+              optional: true
+
+      # Tolerations for GPU node pools (adjust to match your cluster's taint)
+      # tolerations:
+      #   - key: "nvidia.com/gpu"
+      #     operator: "Exists"
+      #     effect: "NoSchedule"
+
+      # Node selector for GPU nodes (adjust label to match your cluster)
+      # nodeSelector:
+      #   accelerator: nvidia-gpu

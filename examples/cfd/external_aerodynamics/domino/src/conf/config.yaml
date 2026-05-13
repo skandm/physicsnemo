@@ -50,14 +50,12 @@ data_processor: # Data processor configurable parameters
 variables:
   surface:
     solution:
-      # Not used for volume-only training (model_type: volume).
-      p_surf: scalar
+      # Column order must match the column order written by csv_to_zarr.py:
+      #   0: pressure (scalar), 1-3: velocity (vector)
+      pressure: scalar     # column 0
+      velocity: vector     # columns 1, 2, 3
   volume:
-    solution:
-      # Column order must match the column order written by convert_to_zarr.py:
-      #   0-2: Velocity time-averaged (vector), 3: Pressure time-averaged (scalar)
-      U_time_avg: vector   # columns 0, 1, 2
-      p_time_avg: scalar   # column 3
+    solution: {}           # empty — not used for surface-only training
   global_parameters:
     inlet_velocity:
       type: vector
@@ -99,7 +97,7 @@ domain_parallelism:
 # │          Model Parameters                 │
 # └───────────────────────────────────────────┘  
 model:
-  model_type: volume # train which model? surface, volume, combined
+  model_type: surface # train which model? surface, volume, combined
   activation: "gelu" # "relu" or "gelu"
   loss_function:
     loss_type: "mse" # mse or rmse

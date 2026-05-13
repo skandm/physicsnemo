@@ -9,18 +9,18 @@ and running inference on new geometries.
 
 ```
 Raw CFD data                    Zarr dataset                   Trained model
-(STL + VTI files)               (one .zarr per case)
+                                (one .zarr per case)
        │                               │                              │
        ▼                               ▼                              ▼
-convert_to_zarr.py  ──►  validate_zarr.py                      run_inference.py
-                         inspect_zarr.py                        (new STL → VTI)
-                         check_coords.py
-                         split_zarr.py  ──►  zarr_val/  (val cases moved out)
-                                        └── zarr/      (train, unchanged)
+[VTI-based]          validate_zarr.py                          run_inference.py
+convert_to_zarr.py   inspect_zarr.py                           (new STL → VTI)
+                     check_coords.py
+[CSV-based]          split_zarr.py  ──►  zarr_val/  (val cases moved out)
+csv_to_zarr.py                      └── zarr/      (train, unchanged)
                                                   │
-                                                  ▼
-                                    shuffle_zarr_volume.py  ──►  zarr_shuffled/
-                                    (recommended for volume_sample_from_disk: true)
+[Combined: run both                               ▼
+scripts — they write          shuffle_zarr_volume.py  ──►  zarr_shuffled/
+to the same .zarr]            (recommended for volume_sample_from_disk: true)
                                                   │
                                                   ▼
                                          check_bounds.py  ──►  config.yaml
@@ -45,7 +45,9 @@ conda activate domino
 cd /path/to/physicsnemo/examples/cfd/external_aerodynamics/domino/src
 ```
 
-**Input data layout** — each simulation case must be in its own numbered folder:
+**Input data layout** — each simulation case must be in its own numbered folder.
+
+*VTI-based (volume training):*
 ```
 data/
   0/
@@ -57,16 +59,38 @@ data/
   ...
 ```
 
+*CSV-based (LBM cut-cell / surface training):*
+```
+data/
+  0/
+    mesh.stl           # surface geometry
+    pressure.csv       # columns: x, y, z, p
+    velocity.csv       # columns: x, y, z, vx, vy, vz
+  1/
+    mesh.stl
+    pressure.csv
+    velocity.csv
+  ...
+```
+
 ---
 
-## Step 1 — Convert STL + VTI to Zarr
+## Step 1 — Convert CFD Data to Zarr
+
+Two scripts are available depending on your data format.  Both produce `.zarr`
+files with the same STL keys; the difference is in what field arrays they write.
+
+---
+
+### Step 1a — STL + VTI → Zarr (volume training)
 
 **Script:** `convert_to_zarr.py`
 
-Converts each case folder (STL + VTI) into a `.zarr` file that DoMINO can read
-during training. Also handles unit conversion if the STL is in millimetres.
+Converts each case folder (STL + VTI) into a `.zarr` file for volume or
+combined DoMINO training. Also handles unit conversion if the STL is in
+millimetres.
 
-### Configuration
+#### Configuration
 
 Edit the constants at the top of `convert_to_zarr.py`:
 
@@ -83,7 +107,7 @@ Edit the constants at the top of `convert_to_zarr.py`:
 | `FIELD_LOCATION` | `"point_data"` or `"cell_data"` |
 | `SKIP_EXISTING` | `True` to skip already-converted cases (safe for re-runs) |
 
-### Usage
+#### Usage
 
 **First run — discover field names (leave `VOLUME_FIELD_NAMES = {}`):**
 ```bash
@@ -101,7 +125,7 @@ python convert_to_zarr.py
 
 If a field name is wrong the script errors immediately and shows the correct names.
 
-### Expected output
+#### Expected output
 ```
 Found 50 cases in /data/raw
 [0]
@@ -115,6 +139,87 @@ Done: 50 converted, 0 failed
 > **Note:** The column order in `VOLUME_FIELD_NAMES` determines the column order
 > in `volume_fields` and **must match** the `variables.volume.solution` section
 > in `config.yaml`.
+
+---
+
+### Step 1b — STL + CSV → Zarr (LBM cut-cell / surface training)
+
+**Script:** `csv_to_zarr.py`
+
+Converts each case folder (STL + two CSV files) into a `.zarr` file for surface
+or combined DoMINO training. The CSVs contain LBM cut-cell centers (voxels
+intersected by the STL surface). Surface normals and areas are derived by
+projecting each cut-cell center onto the nearest STL face.
+
+Zarr stores are opened with `mode="a"` (append), so you can run
+`convert_to_zarr.py` first and then `csv_to_zarr.py` to produce a single zarr
+with both volume and surface keys for `model_type: combined`.
+
+#### Configuration
+
+Edit the constants at the top of `csv_to_zarr.py`:
+
+| Constant | Description |
+|---|---|
+| `INPUT_DIR` | Parent folder containing the numbered case folders |
+| `OUTPUT_DIR` | Where `.zarr` files will be written |
+| `STL_FILENAME` | STL file name (default: `mesh.stl`) |
+| `PRESSURE_CSV_FILENAME` | Pressure CSV file name (default: `pressure.csv`) |
+| `VELOCITY_CSV_FILENAME` | Velocity CSV file name (default: `velocity.csv`) |
+| `COORD_COLS` | 0-based column indices for x, y, z in both CSVs (default: `[0, 1, 2]`) |
+| `PRESSURE_COLS` | Column indices for pressure values (default: `[3]`) |
+| `VELOCITY_COLS` | Column indices for velocity values (default: `[3, 4, 5]`) |
+| `CSV_HAS_HEADER` | `True` if CSVs have a header row, `False` if purely numeric |
+| `STL_UNIT_SCALE` | `0.001` if STL/CSV coordinates are in mm, `1.0` if in metres |
+| `INLET_VELOCITY` | Inlet velocity in m/s |
+| `AIR_DENSITY` | Air density in kg/m³ (default: `1.225`) |
+| `SKIP_EXISTING` | `True` to skip already-converted cases |
+
+#### Zarr keys written
+
+| Key | Shape | Description |
+|---|---|---|
+| `stl_coordinates` | `[N_verts, 3]` | STL vertex positions |
+| `stl_centers` | `[N_faces, 3]` | STL face centres |
+| `stl_faces` | `[N_faces*3]` | Triangle vertex indices |
+| `stl_areas` | `[N_faces]` | Triangle areas (m²) |
+| `surface_mesh_centers` | `[N, 3]` | Cut-cell centre coordinates |
+| `surface_normals` | `[N, 3]` | Outward face normals (from nearest STL face) |
+| `surface_areas` | `[N]` | Face areas inherited from nearest STL face |
+| `surface_fields` | `[N, 4]` | Fields in column order `[p, vx, vy, vz]` |
+| `global_params_values` | `[2, 1]` | `[[inlet_velocity], [air_density]]` |
+| `global_params_reference` | `[2, 1]` | Same as above |
+
+#### Usage
+
+```bash
+python csv_to_zarr.py
+```
+
+The script runs a one-time CSV inspection (row/column counts, first 3 rows)
+before converting all cases.
+
+#### Expected output
+```
+Found 50 cases in /data/raw
+
+── CSV inspection (case: 0) ──
+  pressure.csv: 82341 rows, 4 columns
+    first 3 rows:
+    ...
+  velocity.csv: 82341 rows, 6 columns
+    ...
+
+[0]
+  OK: stl=12450 verts / 24896 faces | surface=82341 pts / 4 channels
+[1]
+  OK: stl=11980 verts / 23956 faces | surface=80122 pts / 4 channels
+...
+Done: 50 converted, 0 failed
+```
+
+> **Note:** The column order of `surface_fields` is `[p, vx, vy, vz]` and must
+> match the `variables.surface.solution` section in `config.yaml`.
 
 ---
 
@@ -396,6 +501,7 @@ Paste the suggested value into `config.yaml`.
 
 Edit `conf/config.yaml` with the values from the previous steps:
 
+**Volume training** (`convert_to_zarr.py` data):
 ```yaml
 project:
   name: RAF_CFD
@@ -427,12 +533,34 @@ variables:
       # Column order must match VOLUME_FIELD_NAMES in convert_to_zarr.py
       U_time_avg: vector   # columns 0, 1, 2
       p_time_avg: scalar   # column 3
+  surface:
+    solution: {}           # empty — not used for volume-only training
+```
+
+**Surface training** (`csv_to_zarr.py` data):
+```yaml
+model:
+  model_type: surface                     # volume / surface / combined
+  use_surface_normals: true
+  use_surface_area: true
+  surface_sampling_algorithm: area_weighted
+  loss_function:
+    area_weighing_factor: 54              # from check_areas.py
+
+variables:
+  surface:
+    solution:
+      # Column order must match surface_fields written by csv_to_zarr.py: [p, vx, vy, vz]
+      pressure: scalar     # column 0
+      velocity: vector     # columns 1, 2, 3
+  volume:
+    solution: {}           # empty — not used for surface-only training
 ```
 
 > **Notes:**
 > - `output` controls where checkpoints, TensorBoard logs, and Hydra config are saved. Set to an absolute path (e.g. on a mounted GCS bucket) to persist across sessions.
 > - `data_processor`, `project_dir`, and `train.checkpoint_dir` are legacy fields — leave them as-is, they are not used by `train.py`.
-> - Variable names and order under `variables.volume.solution` must exactly match the column order in `convert_to_zarr.py`.
+> - Variable names and order under `variables.volume.solution` / `variables.surface.solution` must exactly match the column order written by `convert_to_zarr.py` / `csv_to_zarr.py` respectively.
 
 ---
 
@@ -672,6 +800,17 @@ The CLI (`python run_inference.py ...`) is unchanged and internally instantiates
 **`fields not found in point_data` during conversion**
 > The field names in `VOLUME_FIELD_NAMES` don't match the actual VTI field names.
 > Set `VOLUME_FIELD_NAMES = {}` and re-run to get the correct names.
+
+**`Row count mismatch` or `Coordinate mismatch` during CSV conversion**
+> `pressure.csv` and `velocity.csv` must have the same number of rows and the
+> same x, y, z coordinates. Verify that both files come from the same simulation
+> output. The script asserts coordinate agreement to within 1e-6 before stacking fields.
+
+**`IndexError` or wrong values after CSV conversion**
+> Check `COORD_COLS`, `PRESSURE_COLS`, and `VELOCITY_COLS` in `csv_to_zarr.py`
+> against the actual column layout of your CSVs. The one-time inspection printed
+> at startup shows the first 3 rows — use those to verify the indices.
+> If your CSVs have a header row, set `CSV_HAS_HEADER = True`.
 
 **`Missing key` errors in `validate_zarr.py`**
 > A required array is missing from a zarr case — the conversion likely failed or
