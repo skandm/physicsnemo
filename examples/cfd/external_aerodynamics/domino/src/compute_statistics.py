@@ -40,7 +40,6 @@ if not hasattr(wp, "context"):
     _ctx.Device = object  # used as type annotation only, not at runtime
     wp.context = _ctx
     _sys.modules["warp.context"] = _ctx
-
 import argparse
 import os
 import time
