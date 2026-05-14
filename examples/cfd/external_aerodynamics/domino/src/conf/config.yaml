@@ -20,7 +20,7 @@
 project: # Project name
   name: RAF_SURK   
   
-exp_tag: 7 # Experiment tag
+exp_tag: 8 # Experiment tag
 # Main output directory.
 project_dir: /data/skand/rafl/domino/${project.name}/
 output: /data/skand/rafl/domino/${project.name}/${exp_tag}
@@ -101,11 +101,11 @@ model:
   activation: "gelu" # "relu" or "gelu"
   loss_function:
     loss_type: "mse" # mse or rmse
-    area_weighing_factor: 3  # keep from exp 6
+    area_weighing_factor: 10 # exp 8: make area-weighted loss actually contribute
   interp_res: [256, 128, 128] # resolution of latent space 128, 64, 48
   use_sdf_in_basis_func: true # SDF in basis function network
   volume_points_sample: 32768 # Number of points to sample in volume per epoch
-  surface_points_sample: 16364 # Number of points to sample on surface per epoch
+  surface_points_sample: 32768 # exp 8: doubled for better per-cell coverage
   surface_sampling_algorithm: area_weighted #random or area_weighted
   geom_points_sample: 100000 # Number of points to sample on STL per epoch
   num_neighbors_surface: 7 # How many neighbors on surface?
@@ -123,7 +123,7 @@ model:
   solution_calculation_mode: two-loop # one-loop is better for sharded, two-loop is lower memory but more overhead. Physics losses are not supported via one-loop presently.
   geometry_rep: # Hyperparameters for geometry representation network
     geo_conv:
-      base_neurons: 32 # 256 or 64
+      base_neurons: 64 # exp 8: increased from 32 for better geometry representation
       base_neurons_in: 1
       base_neurons_out: 1
       volume_radii: [0.02, 0.1, 0.5, 1.0] # radii for volume
@@ -186,7 +186,7 @@ train: # Training configurable parameters
   checkpoint_dir: /user/models/ # deprecated: Use only for retraining
   add_physics_loss: false
   lr_scheduler:
-    name: MultiStepLR # Also supports CosineAnnealingLR  
+    name: MultiStepLR # Also supports CosineAnnealingLR
     milestones: [50, 200, 400, 500, 600, 700, 800, 900] # only used if lr_scheduler is MultiStepLR
     gamma: 0.5 # only used if lr_scheduler is MultiStepLR
     T_max: ${train.epochs} # only used if lr_scheduler is CosineAnnealingLR
