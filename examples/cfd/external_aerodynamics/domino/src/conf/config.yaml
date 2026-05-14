@@ -20,7 +20,7 @@
 project: # Project name
   name: RAF_SURK   
   
-exp_tag: 2 # Experiment tag
+exp_tag: 3 # Experiment tag
 # Main output directory.
 project_dir: /data/skand/rafl/domino/${project.name}/
 output: /data/skand/rafl/domino/${project.name}/${exp_tag}
@@ -198,7 +198,7 @@ train: # Training configurable parameters
   amp:
     enabled: true
     autocast:
-      dtype: torch.float16
+      dtype: torch.bfloat16
     scaler:
       _target_: torch.cuda.amp.GradScaler
       enabled: ${..enabled}
