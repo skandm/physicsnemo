@@ -71,11 +71,11 @@ data: # Input directory for training and validation data
   input_dir: /data/skand/rafl/data_nemo
   input_dir_val: /data/skand/rafl/zarr_val
   bounding_box_surface: # Bounding box of the STL surface (meters)
-    min: [-0.00, -5.90, -1.69]
-    max: [9.66,   5.90,  3.39]
+    min: [-0.05, -5.90, -0.35]
+    max: [9.35,   5.90,  2.40]
   bounding_box: # For surface-only training, same as bounding_box_surface
-    min: [-0.00, -5.90, -1.69]
-    max: [9.66,   5.90,  3.39]
+    min: [-0.05, -5.90, -0.35]
+    max: [9.35,   5.90,  2.40]
   gpu_preprocessing: true
   gpu_output: true
   normalize_coordinates: true
