@@ -32,17 +32,14 @@ import os
 import re
 from typing import Literal, Any
 
-# Force physicsnemo's RadiusSearch to use the torch backend instead of warp.
-# The warp backend crashes with "illegal memory access" in multi-GPU mode.
-# We do this by making warp appear too old (< 0.6.0) to the version check
-# that runs at physicsnemo import time, before warp is actually used.
-import importlib.metadata as _imeta
-_orig_imeta_version = _imeta.version
-def _patched_imeta_version(dist_name):
-    if dist_name.lower().replace("-", "_") in ("warp", "warp_lang"):
-        return "0.0.0"
-    return _orig_imeta_version(dist_name)
-_imeta.version = _patched_imeta_version
+# ── Multi-GPU fix ──────────────────────────────────────────────────────────────
+# CUDA libraries (warp, cuML, etc.) default to GPU 0 regardless of rank,
+# causing "illegal memory access" when rank N's data is on cuda:N.
+# Fix: restrict each process to see only its own GPU before any CUDA init.
+# LOCAL_RANK is reset to 0 so DistributedManager selects cuda:0 (the rank's GPU).
+_local_rank = int(os.environ.get("LOCAL_RANK", 0))
+os.environ["CUDA_VISIBLE_DEVICES"] = str(_local_rank)
+os.environ["LOCAL_RANK"] = "0"
 
 # Warp 1.x compatibility shim: physicsnemo uses wp.context.Device as a type
 # annotation which was removed in warp 1.0.
