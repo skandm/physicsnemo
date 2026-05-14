@@ -71,11 +71,11 @@ data: # Input directory for training and validation data
   input_dir: /data/skand/rafl/data_nemo
   input_dir_val: /data/skand/rafl/zarr_val
   bounding_box_surface: # Bounding box of the STL surface (meters)
-    min: [-0.05, -5.90, -0.35]
-    max: [9.35,   5.90,  2.40]
+    min: [-0.00, -5.90, -1.69]
+    max: [9.66,   5.90,  3.39]
   bounding_box: # For surface-only training, same as bounding_box_surface
-    min: [-0.05, -5.90, -0.35]
-    max: [9.35,   5.90,  2.40]
+    min: [-0.00, -5.90, -1.69]
+    max: [9.66,   5.90,  3.39]
   gpu_preprocessing: true
   gpu_output: true
   normalize_coordinates: true
@@ -101,7 +101,7 @@ model:
   activation: "gelu" # "relu" or "gelu"
   loss_function:
     loss_type: "mse" # mse or rmse
-    area_weighing_factor: 43 # 1 / max_face_area = 1 / 0.0232 ≈ 43 (from check_areas.py)
+    area_weighing_factor: 51 # 1 / max_face_area = 1 / 0.0196 ≈ 51 (from check_areas.py)
   interp_res: [256, 128, 128] # resolution of latent space 128, 64, 48
   use_sdf_in_basis_func: true # SDF in basis function network
   volume_points_sample: 32768 # Number of points to sample in volume per epoch
