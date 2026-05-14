@@ -392,6 +392,32 @@ def load_scaling_factors(
     return vol_factors_tensor, surf_factors_tensor
 
 
+def compute_ld_metrics(
+    pred_surface: torch.Tensor,
+    target_surface: torch.Tensor,
+) -> dict[str, torch.Tensor]:
+    """
+    Compute L/D ratio from predicted and target surface force fields.
+
+    surface_fields: [batch, N, 4] = [pressure, force_x, force_y, force_z] (unscaled, Newtons)
+    drag = Σ force_x (col 1), lift = Σ force_z (col -1)
+    """
+    drag_pred = torch.sum(pred_surface[:, :, 1],  dim=1)   # [batch]
+    drag_true = torch.sum(target_surface[:, :, 1], dim=1)
+    lift_pred = torch.sum(pred_surface[:, :, -1],  dim=1)  # [batch]
+    lift_true = torch.sum(target_surface[:, :, -1], dim=1)
+
+    ld_pred = lift_pred / drag_pred                                          # [batch]
+    ld_true = lift_true / drag_true                                          # [batch]
+    ld_rel_error = torch.abs(ld_pred - ld_true) / (torch.abs(ld_true) + 1e-8)
+
+    return {
+        "ld_pred":          torch.mean(ld_pred),
+        "ld_true":          torch.mean(ld_true),
+        "ld_relative_error": torch.mean(ld_rel_error),
+    }
+
+
 def compute_l2(
     pred_surface: torch.Tensor | None,
     pred_volume: torch.Tensor | None,
@@ -413,6 +439,7 @@ def compute_l2(
         _, pred_surface = dataloader.unscale_model_outputs(surface_fields=pred_surface)
         l2_surface = metrics_fn_surface(pred_surface, target_surface)
         l2_dict.update(l2_surface)
+        l2_dict.update(compute_ld_metrics(pred_surface, target_surface))
     if pred_volume is not None:
         target_volume, _ = dataloader.unscale_model_outputs(
             volume_fields=batch["volume_fields"]

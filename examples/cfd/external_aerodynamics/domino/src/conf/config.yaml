@@ -20,7 +20,7 @@
 project: # Project name
   name: RAF_SURK   
   
-exp_tag: 8 # Experiment tag
+exp_tag: 9 # Experiment tag
 # Main output directory.
 project_dir: /data/skand/rafl/domino/${project.name}/
 output: /data/skand/rafl/domino/${project.name}/${exp_tag}
@@ -105,10 +105,10 @@ model:
   interp_res: [256, 128, 128] # resolution of latent space 128, 64, 48
   use_sdf_in_basis_func: true # SDF in basis function network
   volume_points_sample: 32768 # Number of points to sample in volume per epoch
-  surface_points_sample: 32768 # exp 8: doubled for better per-cell coverage
+  surface_points_sample: 65536 # exp 9: doubled again, Blackwell has headroom
   surface_sampling_algorithm: area_weighted #random or area_weighted
-  geom_points_sample: 100000 # Number of points to sample on STL per epoch
-  num_neighbors_surface: 7 # How many neighbors on surface?
+  geom_points_sample: 200000 # exp 9: doubled for better geometry coverage
+  num_neighbors_surface: 11 # exp 9: more local context on surface
   num_neighbors_volume: 16 # How many neighbors on volume?
   combine_volume_surface: false # combine volume and surface encodings
   return_volume_neighbors: false # Whether to return volume neighbors or not
@@ -123,7 +123,7 @@ model:
   solution_calculation_mode: two-loop # one-loop is better for sharded, two-loop is lower memory but more overhead. Physics losses are not supported via one-loop presently.
   geometry_rep: # Hyperparameters for geometry representation network
     geo_conv:
-      base_neurons: 64 # exp 8: increased from 32 for better geometry representation
+      base_neurons: 128 # exp 9: increased from 64
       base_neurons_in: 1
       base_neurons_out: 1
       volume_radii: [0.02, 0.1, 0.5, 1.0] # radii for volume
@@ -136,7 +136,7 @@ model:
       num_modes: 5
       activation: ${model.activation}
     geo_processor:
-      base_filters: 8
+      base_filters: 32 # exp 9: increased from 8
       activation: ${model.activation}
       processor_type: conv # conv or unet (conv is better; fno, fignet to be added)
       self_attention: false # can be used only with unet
@@ -144,17 +144,17 @@ model:
       surface_sdf_scaling_factor: [0.01, 0.02, 0.04] # Scaling factor for SDF, smaller is more emphasis on surface
       volume_sdf_scaling_factor: [0.04] # Scaling factor for SDF, smaller is more emphasis on surface
   nn_basis_functions: # Hyperparameters for basis function network
-    base_layer: 512
+    base_layer: 1024 # exp 9: increased from 512
     fourier_features: true
     num_modes: 5
     activation: ${model.activation}
   local_point_conv:
     activation: ${model.activation}
   aggregation_model: # Hyperparameters for aggregation network
-    base_layer: 512
+    base_layer: 1024 # exp 9: increased from 512
     activation: ${model.activation}
   position_encoder: # Hyperparameters for position encoding network
-    base_neurons: 512
+    base_neurons: 1024 # exp 9: increased from 512
     activation: ${model.activation}
     fourier_features: true
     num_modes: 5
@@ -163,9 +163,9 @@ model:
     surface_neighbors_in_radius: [32, 128] # Number of radius points
     volume_radii: [0.1, 0.25] # Volume radii
     surface_radii: [0.05, 0.25] # Surface radii
-    base_layer: 512
+    base_layer: 1024 # exp 9: increased from 512
   parameter_model:
-    base_layer: 512
+    base_layer: 1024 # exp 9: increased from 512
     fourier_features: false
     num_modes: 5
     activation: ${model.activation}
