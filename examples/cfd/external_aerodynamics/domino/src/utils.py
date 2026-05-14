@@ -396,6 +396,7 @@ def compute_ld_metrics(
     pred_surface: torch.Tensor,
     target_surface: torch.Tensor,
     normalized_target: torch.Tensor | None = None,
+    surface_areas: torch.Tensor | None = None,
     padded_value: float = -10.0,
 ) -> dict[str, torch.Tensor]:
     """
@@ -410,6 +411,10 @@ def compute_ld_metrics(
         normalized_target: Normalized target BEFORE unscaling [batch, N, 4].
                            Used to detect padded points (sentinel = padded_value).
                            If None, all points are treated as real (incorrect if padding exists).
+        surface_areas:     Per-point STL face areas [batch, N], used for importance-sampling
+                           correction when area_weighted sampling is active. Dividing forces
+                           by their sampling probability (∝ area) gives an unbiased ratio
+                           Σ(fz/area) / Σ(fx/area) ≈ Σfz_all / Σfx_all.
         padded_value:      Sentinel value used for padding in normalized space (default -10).
     """
     if normalized_target is not None:
@@ -418,10 +423,19 @@ def compute_ld_metrics(
     else:
         point_mask = torch.ones(pred_surface.shape[:2], device=pred_surface.device, dtype=pred_surface.dtype)
 
-    drag_pred = torch.sum(pred_surface[:, :, 1]  * point_mask, dim=1)   # [batch]
-    drag_true = torch.sum(target_surface[:, :, 1] * point_mask, dim=1)
-    lift_pred = torch.sum(pred_surface[:, :, -1]  * point_mask, dim=1)  # [batch]
-    lift_true = torch.sum(target_surface[:, :, -1] * point_mask, dim=1)
+    if surface_areas is not None:
+        # Importance-sampling correction: area-weighted sampling over-samples large-area
+        # (high-lift) regions, inflating L/D. Dividing by area restores the unbiased ratio.
+        inv_area = point_mask / (surface_areas + 1e-10)  # [batch, N]
+        drag_pred = torch.sum(pred_surface[:, :, 1]  * inv_area, dim=1)   # [batch]
+        drag_true = torch.sum(target_surface[:, :, 1] * inv_area, dim=1)
+        lift_pred = torch.sum(pred_surface[:, :, -1]  * inv_area, dim=1)  # [batch]
+        lift_true = torch.sum(target_surface[:, :, -1] * inv_area, dim=1)
+    else:
+        drag_pred = torch.sum(pred_surface[:, :, 1]  * point_mask, dim=1)
+        drag_true = torch.sum(target_surface[:, :, 1] * point_mask, dim=1)
+        lift_pred = torch.sum(pred_surface[:, :, -1]  * point_mask, dim=1)
+        lift_true = torch.sum(target_surface[:, :, -1] * point_mask, dim=1)
 
     ld_pred = torch.abs(lift_pred) / (torch.abs(drag_pred) + 1e-8)
     ld_true = torch.abs(lift_true) / (torch.abs(drag_true) + 1e-8)
@@ -456,7 +470,10 @@ def compute_l2(
         _, pred_surface = dataloader.unscale_model_outputs(surface_fields=pred_surface)
         l2_surface = metrics_fn_surface(pred_surface, target_surface)
         l2_dict.update(l2_surface)
-        l2_dict.update(compute_ld_metrics(pred_surface, target_surface, normalized_target))
+        l2_dict.update(compute_ld_metrics(
+            pred_surface, target_surface, normalized_target,
+            surface_areas=batch.get("surface_areas"),
+        ))
     if pred_volume is not None:
         target_volume, _ = dataloader.unscale_model_outputs(
             volume_fields=batch["volume_fields"]
