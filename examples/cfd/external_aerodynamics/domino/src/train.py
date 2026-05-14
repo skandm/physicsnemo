@@ -31,13 +31,23 @@ import time
 import os
 import re
 from typing import Literal, Any
+
+# Set warp device to this rank's GPU before warp initializes
+_local_rank = int(os.environ.get("LOCAL_RANK", 0))
+
 import warp as wp
-import types as _types, sys as _sys 
+import types as _types, sys as _sys
 if not hasattr(wp, "context"):
     _ctx = _types.ModuleType("warp.context")
     _ctx.Device = object  # used as type annotation only, not at runtime
     wp.context = _ctx
     _sys.modules["warp.context"] = _ctx
+
+# Explicitly set warp's default device to this rank's GPU
+try:
+    wp.set_device(f"cuda:{_local_rank}")
+except Exception:
+    pass
 
 from tabulate import tabulate
 
