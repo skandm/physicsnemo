@@ -138,7 +138,7 @@ class DoMINODataConfig:
     surface_variables: Optional[Sequence] = ("pMean", "wallShearStress")
     surface_points_sample: int = 1024
     num_surface_neighbors: int = 11
-    surface_sampling_algorithm: str = Literal["area_weighted", "random"]
+    surface_sampling_algorithm: str = Literal["area_weighted", "random", "n_x_weighted"]
     surface_factors: Optional[Sequence] = None
     bounding_box_dims_surf: Optional[Union[BoundingBox, Sequence]] = None
 
@@ -444,6 +444,11 @@ class DoMINODataPipe(Dataset):
             # Perform the down sampling:
             if self.config.surface_sampling_algorithm == "area_weighted":
                 weights = surface_sizes
+            elif self.config.surface_sampling_algorithm == "n_x_weighted":
+                # Sample proportional to |n_x| so leading/trailing edge cells
+                # (large n_x, key contributors to drag) appear more frequently.
+                # Small epsilon ensures every cell has a nonzero sampling chance.
+                weights = np.abs(surface_normals[:, 0]) + 1e-6
             else:
                 weights = None
 
@@ -1179,6 +1184,13 @@ class CachedDoMINODataset(Dataset):
                     points=result["surface_mesh_centers"],
                     n_points=self.surface_points,
                     weights=result["surface_areas"],
+                )
+            elif self.surface_sampling_algorithm == "n_x_weighted":
+                nx_weights = np.abs(result["surface_normals"][:, 0]) + 1e-6
+                coords_sampled, idx_surface = shuffle_array(
+                    points=result["surface_mesh_centers"],
+                    n_points=self.surface_points,
+                    weights=nx_weights,
                 )
             else:
                 coords_sampled, idx_surface = shuffle_array(

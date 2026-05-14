@@ -106,7 +106,7 @@ model:
   use_sdf_in_basis_func: true # SDF in basis function network
   volume_points_sample: 32768 # Number of points to sample in volume per epoch
   surface_points_sample: 32768 # exp 10: back to exp 8 — OOM on H100 NVL
-  surface_sampling_algorithm: area_weighted #random or area_weighted
+  surface_sampling_algorithm: n_x_weighted #random, area_weighted, or n_x_weighted
   geom_points_sample: 100000 # exp 10: back to exp 8 — OOM on H100 NVL
   num_neighbors_surface: 11 # exp 9: more local context on surface
   num_neighbors_volume: 16 # How many neighbors on volume?
