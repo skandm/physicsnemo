@@ -20,7 +20,7 @@
 project: # Project name
   name: RAF_SURK   
   
-exp_tag: 1 # Experiment tag
+exp_tag: 2 # Experiment tag
 # Main output directory.
 project_dir: /data/skand/rafl/domino/${project.name}/
 output: /data/skand/rafl/domino/${project.name}/${exp_tag}
@@ -101,7 +101,7 @@ model:
   activation: "gelu" # "relu" or "gelu"
   loss_function:
     loss_type: "mse" # mse or rmse
-    area_weighing_factor: 51 # 1 / max_face_area = 1 / 0.0196 ≈ 51 (from check_areas.py)
+    area_weighing_factor: 1 # disabled — equal weighting across all surface points
   interp_res: [256, 128, 128] # resolution of latent space 128, 64, 48
   use_sdf_in_basis_func: true # SDF in basis function network
   volume_points_sample: 32768 # Number of points to sample in volume per epoch
