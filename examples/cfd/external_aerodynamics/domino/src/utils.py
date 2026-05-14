@@ -423,9 +423,9 @@ def compute_ld_metrics(
     lift_pred = torch.sum(pred_surface[:, :, -1]  * point_mask, dim=1)  # [batch]
     lift_true = torch.sum(target_surface[:, :, -1] * point_mask, dim=1)
 
-    ld_pred = lift_pred / (drag_pred + 1e-8)
-    ld_true = lift_true / (drag_true + 1e-8)
-    ld_rel_error = torch.abs(ld_pred - ld_true) / (torch.abs(ld_true) + 1e-8)
+    ld_pred = torch.abs(lift_pred) / (torch.abs(drag_pred) + 1e-8)
+    ld_true = torch.abs(lift_true) / (torch.abs(drag_true) + 1e-8)
+    ld_rel_error = torch.abs(ld_pred - ld_true) / (ld_true + 1e-8)
 
     return {
         "ld_pred":           torch.mean(ld_pred),
