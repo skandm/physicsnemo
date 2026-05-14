@@ -20,7 +20,7 @@
 project: # Project name
   name: RAF_SURK   
   
-exp_tag: 9 # Experiment tag
+exp_tag: 10 # Experiment tag
 # Main output directory.
 project_dir: /data/skand/rafl/domino/${project.name}/
 output: /data/skand/rafl/domino/${project.name}/${exp_tag}
@@ -105,9 +105,9 @@ model:
   interp_res: [256, 128, 128] # resolution of latent space 128, 64, 48
   use_sdf_in_basis_func: true # SDF in basis function network
   volume_points_sample: 32768 # Number of points to sample in volume per epoch
-  surface_points_sample: 65536 # exp 9: doubled again, Blackwell has headroom
+  surface_points_sample: 32768 # exp 10: back to exp 8 — OOM on H100 NVL
   surface_sampling_algorithm: area_weighted #random or area_weighted
-  geom_points_sample: 200000 # exp 9: doubled for better geometry coverage
+  geom_points_sample: 100000 # exp 10: back to exp 8 — OOM on H100 NVL
   num_neighbors_surface: 11 # exp 9: more local context on surface
   num_neighbors_volume: 16 # How many neighbors on volume?
   combine_volume_surface: false # combine volume and surface encodings
@@ -123,7 +123,7 @@ model:
   solution_calculation_mode: two-loop # one-loop is better for sharded, two-loop is lower memory but more overhead. Physics losses are not supported via one-loop presently.
   geometry_rep: # Hyperparameters for geometry representation network
     geo_conv:
-      base_neurons: 128 # exp 9: increased from 64
+      base_neurons: 64 # exp 10: back to exp 8 — OOM on H100 NVL
       base_neurons_in: 1
       base_neurons_out: 1
       volume_radii: [0.02, 0.1, 0.5, 1.0] # radii for volume
@@ -136,7 +136,7 @@ model:
       num_modes: 5
       activation: ${model.activation}
     geo_processor:
-      base_filters: 32 # exp 9: increased from 8
+      base_filters: 16 # exp 10: middle ground (8 in exp 8, 32 OOM)
       activation: ${model.activation}
       processor_type: conv # conv or unet (conv is better; fno, fignet to be added)
       self_attention: false # can be used only with unet
