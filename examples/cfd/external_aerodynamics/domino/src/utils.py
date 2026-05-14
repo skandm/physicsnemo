@@ -451,9 +451,9 @@ def metrics_fn_surface(
 
     metrics = {
         "l2_surf_pressure": torch.mean(l2[:, 0]),
-        "l2_shear_x": torch.mean(l2[:, 1]),
-        "l2_shear_y": torch.mean(l2[:, 2]),
-        "l2_shear_z": torch.mean(l2[:, 3]),
+        "l2_force_x": torch.mean(l2[:, 1]),
+        "l2_force_y": torch.mean(l2[:, 2]),
+        "l2_force_z": torch.mean(l2[:, 3]),
     }
 
     return metrics

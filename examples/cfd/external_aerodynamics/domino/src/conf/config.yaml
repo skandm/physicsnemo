@@ -20,7 +20,7 @@
 project: # Project name
   name: RAF_SURK   
   
-exp_tag: 3 # Experiment tag
+exp_tag: 7 # Experiment tag
 # Main output directory.
 project_dir: /data/skand/rafl/domino/${project.name}/
 output: /data/skand/rafl/domino/${project.name}/${exp_tag}
@@ -51,9 +51,9 @@ variables:
   surface:
     solution:
       # Column order must match the column order written by csv_to_zarr.py:
-      #   0: pressure (scalar), 1-3: velocity (vector)
+      #   0: pressure (scalar), 1-3: force (vector)
       pressure: scalar     # column 0
-      velocity: vector     # columns 1, 2, 3
+      force: vector        # columns 1, 2, 3 (fx, fy, fz)
   volume:
     solution: {}           # empty — not used for surface-only training
   global_parameters:
@@ -68,8 +68,8 @@ variables:
 # │         Data Configs                      │
 # └───────────────────────────────────────────┘  
 data: # Input directory for training and validation data
-  input_dir: /data/skand/rafl/data_nemo
-  input_dir_val: /data/skand/rafl/zarr_val
+  input_dir: /data/skand/rafl/data_nemo_force
+  input_dir_val: /data/skand/rafl/zarr_val_force
   bounding_box_surface: # Bounding box of the STL surface (meters)
     min: [-0.00, -5.90, -1.69]
     max: [9.66,   5.90,  3.39]
@@ -81,7 +81,7 @@ data: # Input directory for training and validation data
   normalize_coordinates: true
   sample_in_bbox: true
   sampling: true
-  scaling_factors: /data/skand/rafl/scaling_factors/scaling_factors.pkl
+  scaling_factors: /data/skand/rafl/scaling_factors/scaling_factors_force.pkl
   volume_sample_from_disk: false 
   max_samples_for_statistics: 259
 
@@ -101,7 +101,7 @@ model:
   activation: "gelu" # "relu" or "gelu"
   loss_function:
     loss_type: "mse" # mse or rmse
-    area_weighing_factor: 10 # moderate area weighting — balanced between 1 (none) and 51 (full)
+    area_weighing_factor: 3  # keep from exp 6
   interp_res: [256, 128, 128] # resolution of latent space 128, 64, 48
   use_sdf_in_basis_func: true # SDF in basis function network
   volume_points_sample: 32768 # Number of points to sample in volume per epoch
@@ -114,7 +114,7 @@ model:
   return_volume_neighbors: false # Whether to return volume neighbors or not
   use_surface_normals: true # Use surface normals and surface areas for surface computation?
   use_surface_area: true # Use only surface normals and not surface area
-  integral_loss_scaling_factor: 10 # Scale integral loss by this factor
+  integral_loss_scaling_factor: 0.1 # keep from exp 6 — solved val loss explosion
   normalization: min_max_scaling # or mean_std_scaling
   encode_parameters: false # encode inlet velocity and air density in the model
   surf_loss_scaling: 5.0 # scale surface loss with this factor in combined mode
@@ -194,7 +194,7 @@ train: # Training configurable parameters
   optimizer:
     name: Adam # or AdamW
     lr: 0.001
-    weight_decay: 0.0
+    weight_decay: 1e-4               # keep from exp 6
   amp:
     enabled: true
     autocast:

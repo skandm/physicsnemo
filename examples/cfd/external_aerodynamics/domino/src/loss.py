@@ -391,49 +391,25 @@ def integral_loss_fn(
 
 
 def lift_loss_fn(output, target, area, normals, stream_velocity=None, padded_value=-10):
-    vel_inlet = stream_velocity  # Get this from the dataset
-    mask = abs(target - padded_value) > 1e-3
-
-    output_true = target * mask * area * (vel_inlet) ** 2.0
-    output_pred = output * mask * area * (vel_inlet) ** 2.0
-
-    normals = torch.select(normals, 2, 2)
-    # output_true_0 = output_true[:, :, 0]
-    output_true_0 = output_true.select(2, 0)
-    output_pred_0 = output_pred.select(2, 0)
-
-    pres_true = output_true_0 * normals
-    pres_pred = output_pred_0 * normals
-
-    wz_true = output_true[:, :, -1]
-    wz_pred = output_pred[:, :, -1]
-
-    masked_pred = torch.mean(pres_pred + wz_pred, (1))
-    masked_truth = torch.mean(pres_true + wz_true, (1))
-
-    loss = (masked_pred - masked_truth) ** 2.0
-    loss = torch.mean(loss)
-    return loss
+    # Direct force summation: force_z is col 3 (last column)
+    mask = (abs(target - padded_value) > 1e-3).float()
+    force_z_pred = output[:, :, -1] * mask[:, :, -1]
+    force_z_true = target[:, :, -1] * mask[:, :, -1]
+    lift_pred = torch.mean(force_z_pred, dim=1)   # [batch]
+    lift_true = torch.mean(force_z_true, dim=1)   # [batch]
+    loss = (lift_pred - lift_true) ** 2.0
+    return torch.mean(loss)
 
 
 def drag_loss_fn(output, target, area, normals, stream_velocity=None, padded_value=-10):
-    vel_inlet = stream_velocity  # Get this from the dataset
-    mask = abs(target - padded_value) > 1e-3
-    output_true = target * mask * area * (vel_inlet) ** 2.0
-    output_pred = output * mask * area * (vel_inlet) ** 2.0
-
-    pres_true = output_true[:, :, 0] * normals[:, :, 0]
-    pres_pred = output_pred[:, :, 0] * normals[:, :, 0]
-
-    wx_true = output_true[:, :, 1]
-    wx_pred = output_pred[:, :, 1]
-
-    masked_pred = torch.mean(pres_pred + wx_pred, (1))
-    masked_truth = torch.mean(pres_true + wx_true, (1))
-
-    loss = (masked_pred - masked_truth) ** 2.0
-    loss = torch.mean(loss)
-    return loss
+    # Direct force summation: force_x is col 1
+    mask = (abs(target - padded_value) > 1e-3).float()
+    force_x_pred = output[:, :, 1] * mask[:, :, 1]
+    force_x_true = target[:, :, 1] * mask[:, :, 1]
+    drag_pred = torch.mean(force_x_pred, dim=1)   # [batch]
+    drag_true = torch.mean(force_x_true, dim=1)   # [batch]
+    loss = (drag_pred - drag_true) ** 2.0
+    return torch.mean(loss)
 
 
 def compute_loss_dict(
