@@ -198,58 +198,75 @@ def run_inference(
     stl_coordinates: torch.Tensor,
     stl_faces: torch.Tensor,
     stl_centers: torch.Tensor,
-    stl_normals: torch.Tensor,
     stl_areas: torch.Tensor,
     global_params: torch.Tensor,
     model: DoMINO,
     datapipe: DoMINODataPipe,
     batch_size: int,
     logger: PythonLogger,
+    query_centers: torch.Tensor | None = None,
+    query_normals: torch.Tensor | None = None,
+    query_areas: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Run DoMINO inference at all STL face centers.
+    """Run DoMINO inference at a set of query points.
+
+    The STL geometry arrays (stl_coordinates, stl_faces, stl_centers, stl_areas)
+    always describe the full mesh and are used for geometry encoding.
+
+    The query arrays (query_centers, query_normals, query_areas) define where
+    predictions are made. If omitted they default to the STL face centers.
 
     Args:
-        stl_coordinates: [N_verts, 3]
-        stl_faces:       [N_faces * 3]  — flat index buffer
-        stl_centers:     [N_faces, 3]   — face centroids
-        stl_normals:     [N_faces, 3]   — outward unit normals
-        stl_areas:       [N_faces]      — face areas
+        stl_coordinates: [N_verts, 3]       — STL vertex coordinates
+        stl_faces:       [N_faces * 3]      — flat face index buffer
+        stl_centers:     [N_faces, 3]       — STL face centroids (geometry context)
+        stl_areas:       [N_faces]          — STL face areas (geometry context)
         global_params:   [n_params, 1]
-        model:           Loaded DoMINO model (in eval mode)
-        datapipe:        Configured DoMINODataPipe (for preprocessing + unscaling)
-        batch_size:      Chunk size for face-center processing (0 = all at once)
+        model:           Loaded DoMINO model (eval mode)
+        datapipe:        Configured DoMINODataPipe
+        batch_size:      Points per forward pass
         logger:          Logger instance
+        query_centers:   [N_query, 3]  — points to predict at (default: stl_centers)
+        query_normals:   [N_query, 3]  — normals at query points (default: stl normals)
+        query_areas:     [N_query]     — areas at query points  (default: stl areas)
 
     Returns:
-        preds: float32 [N_faces, 4] = [pressure, force_x, force_y, force_z]
+        preds: float32 [N_query, 4] = [pressure, force_x, force_y, force_z]
     """
-    n_faces = stl_centers.shape[0]
+    # Default query points to STL face centers
+    if query_centers is None:
+        query_centers = stl_centers
+    if query_normals is None:
+        query_normals = torch.zeros_like(query_centers)  # datapipe will handle missing normals
+    if query_areas is None:
+        query_areas = stl_areas
 
-    if batch_size <= 0 or batch_size >= n_faces:
-        # Process all face centers in one forward pass.
-        chunks = [(0, n_faces)]
+    n_query = query_centers.shape[0]
+
+    if batch_size <= 0 or batch_size >= n_query:
+        chunks = [(0, n_query)]
     else:
-        n_chunks = math.ceil(n_faces / batch_size)
-        chunks = [(i * batch_size, min((i + 1) * batch_size, n_faces)) for i in range(n_chunks)]
+        n_chunks = math.ceil(n_query / batch_size)
+        chunks = [(i * batch_size, min((i + 1) * batch_size, n_query)) for i in range(n_chunks)]
 
     logger.info(
-        f"Running inference at {n_faces} face centers "
-        f"in {len(chunks)} chunk(s) of up to {batch_size if batch_size > 0 else n_faces} points"
+        f"Running inference at {n_query} points "
+        f"in {len(chunks)} chunk(s) of up to {batch_size if batch_size > 0 else n_query} points"
     )
 
     all_preds = []
     for i, (start, end) in enumerate(chunks):
-        logger.info(f"  Chunk {i + 1}/{len(chunks)}: faces [{start}, {end})")
+        logger.info(f"  Chunk {i + 1}/{len(chunks)}: [{start}, {end})")
 
         inf_dict = _build_inference_dict(
             stl_coordinates = stl_coordinates,
             stl_faces       = stl_faces,
-            stl_centers     = stl_centers,
-            stl_areas       = stl_areas,
+            stl_centers     = stl_centers,        # always full STL for geometry
+            stl_areas       = stl_areas,           # always full STL for geometry
             global_params   = global_params,
-            surface_centers = stl_centers[start:end],
-            surface_normals = stl_normals[start:end],
-            surface_areas   = stl_areas[start:end],
+            surface_centers = query_centers[start:end],
+            surface_normals = query_normals[start:end],
+            surface_areas   = query_areas[start:end],
         )
 
         preprocessed = datapipe.process_data(inf_dict)
@@ -259,10 +276,9 @@ def run_inference(
             _, output_surf = model(preprocessed)
 
         _, output_surf = datapipe.unscale_model_outputs(None, output_surf)
-        # output_surf: [1, chunk_size, 4]
         all_preds.append(output_surf[0].cpu())
 
-    return torch.cat(all_preds, dim=0)  # [N_faces, 4]
+    return torch.cat(all_preds, dim=0)  # [N_query, 4]
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -386,13 +402,15 @@ def main(cfg: DictConfig) -> None:
         stl_coordinates = stl_coordinates,
         stl_faces       = stl_faces,
         stl_centers     = stl_centers_t,
-        stl_normals     = stl_normals_t,
         stl_areas       = stl_areas_t,
         global_params   = global_params,
         model           = model,
         datapipe        = datapipe,
         batch_size      = batch_size,
         logger          = logger,
+        query_centers   = stl_centers_t,
+        query_normals   = stl_normals_t,
+        query_areas     = stl_areas_t,
     )
     # preds: [N_faces, 4] = [pressure, force_x, force_y, force_z]
 
@@ -463,14 +481,16 @@ def main(cfg: DictConfig) -> None:
         lbm_preds = run_inference(
             stl_coordinates = stl_coordinates,
             stl_faces       = stl_faces,
-            stl_centers     = stl_centers_t,
-            stl_normals     = stl_normals_t,
-            stl_areas       = stl_areas_t,
+            stl_centers     = stl_centers_t,   # full STL for geometry context
+            stl_areas       = stl_areas_t,     # full STL for geometry context
             global_params   = global_params,
             model           = model,
             datapipe        = datapipe,
             batch_size      = batch_size,
             logger          = logger,
+            query_centers   = lbm_centers_t,   # predict at LBM cell centers
+            query_normals   = lbm_normals_t,
+            query_areas     = lbm_areas_t,
         )
         # lbm_preds: [N_cells, 4] = [pressure, force_x, force_y, force_z]
 
