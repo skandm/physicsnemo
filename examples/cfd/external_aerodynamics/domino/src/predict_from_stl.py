@@ -43,7 +43,12 @@ Arguments (all passed as Hydra overrides):
                         in meters (default: 0.001).
     predict.batch_size  Number of face centers processed per forward pass.
                         Reduce if you get CUDA OOM. 0 means process all at once
-                        (default: 0).
+                        (default: surface_points_sample from config).
+    predict.force_csv   Path to force.csv from the LBM simulation (optional).
+                        If provided, the force-based L/D is computed by running
+                        inference at the exact LBM cut-cell centers and summing
+                        directly — no normalization ambiguity. Columns must be
+                        x, y, z, fx, fy, fz (no header).
 
 The script reads model / data config from conf/config.yaml via Hydra, and
 loads the latest checkpoint found in cfg.resume_dir.
@@ -103,20 +108,61 @@ def load_stl(stl_path: Path, unit_scale: float = 1.0):
         centers:  float32 [N_faces, 3] — face centroid coordinates (scaled)
         normals:  float32 [N_faces, 3] — outward unit normals
         areas:    float32 [N_faces]    — face areas (scaled by unit_scale²)
+        stl_mesh: triangulated pyvista PolyData with scaled coords and cell normals
+                  (used for nearest-face projection in load_lbm_points)
     """
     stl = pv.read(str(stl_path))
     stl = stl.triangulate()
-    stl = stl.compute_normals(cell_normals=True, point_normals=False)
 
-    verts   = np.array(stl.points, dtype=np.float32) * unit_scale
+    verts_raw = np.array(stl.points, dtype=np.float32) * unit_scale
+    stl_scaled = stl.copy()
+    stl_scaled.points = verts_raw
+    stl_scaled = stl_scaled.compute_normals(cell_normals=True, point_normals=False)
+
+    verts   = verts_raw
     faces   = stl.faces.reshape(-1, 4)[:, 1:].flatten().astype(np.int32)
-    centers = np.array(stl.cell_centers().points, dtype=np.float32) * unit_scale
-    normals = np.array(stl.cell_data["Normals"], dtype=np.float32)
+    centers = np.array(stl_scaled.cell_centers().points, dtype=np.float32)
+    normals = np.array(stl_scaled.cell_data["Normals"], dtype=np.float32)
 
-    sizes   = stl.compute_cell_sizes(length=False, area=True, volume=False)
-    areas   = np.array(sizes.cell_data["Area"], dtype=np.float32) * (unit_scale ** 2)
+    sizes   = stl_scaled.compute_cell_sizes(length=False, area=True, volume=False)
+    areas   = np.array(sizes.cell_data["Area"], dtype=np.float32)
 
-    return verts, faces, centers, normals, areas
+    return verts, faces, centers, normals, areas, stl_scaled
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# LBM cut-cell loading
+# ──────────────────────────────────────────────────────────────────────────────
+
+def load_lbm_points(force_csv: Path, stl, unit_scale: float = 1.0):
+    """Read LBM cut-cell centers from force.csv and project onto the STL.
+
+    Projects each LBM point to the nearest STL face to inherit its normal
+    and area — exactly the same procedure used in csv_to_zarr.py.
+
+    Args:
+        force_csv:  Path to force.csv (columns: x, y, z, fx, fy, fz).
+        stl:        Triangulated pyvista PolyData with cell normals computed
+                    and coordinates already scaled by unit_scale.
+        unit_scale: Multiply CSV coordinates by this factor (mm → m).
+
+    Returns:
+        coords:  float32 [N_cells, 3] — LBM cell centers (scaled)
+        normals: float32 [N_cells, 3] — nearest STL face normals
+        areas:   float32 [N_cells]    — nearest STL face areas (scaled)
+    """
+    data = np.loadtxt(str(force_csv), delimiter=",", usecols=[0, 1, 2]).astype(np.float32)
+    coords = data * unit_scale  # [N_cells, 3]
+
+    # Project to nearest STL face for normals and areas
+    sizes    = stl.compute_cell_sizes(length=False, area=True, volume=False)
+    stl_areas = np.array(sizes.cell_data["Area"], dtype=np.float32) * (unit_scale ** 2)
+
+    cell_ids, _ = stl.find_closest_cell(coords, return_closest_point=True)
+    normals = stl.cell_data["Normals"][cell_ids].astype(np.float32)
+    areas   = stl_areas[cell_ids].astype(np.float32)
+
+    return coords, normals, areas
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -233,6 +279,9 @@ def main(cfg: DictConfig) -> None:
     # Default to surface_points_sample to match the model's training batch size.
     # Resolved after cfg is loaded so we can reference cfg.model.surface_points_sample.
     batch_size   = int(predict_cfg.get("batch_size", -1))
+    force_csv    = predict_cfg.get("force_csv", None)
+    if force_csv is not None:
+        force_csv = Path(force_csv)
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -252,7 +301,7 @@ def main(cfg: DictConfig) -> None:
 
     # ── Load STL geometry ─────────────────────────────────────────────────────
     logger.info("Loading STL...")
-    verts, faces_flat, centers_np, normals_np, areas_np = load_stl(stl_path, stl_scale)
+    verts, faces_flat, centers_np, normals_np, areas_np, stl_mesh = load_stl(stl_path, stl_scale)
 
     logger.info(
         f"STL loaded: {verts.shape[0]} vertices, {centers_np.shape[0]} faces"
@@ -396,6 +445,48 @@ def main(cfg: DictConfig) -> None:
 
     logger.info(f"Force-based  (N={n_sample} area-weighted): Lift={lift:.6g} N  Drag={drag:.6g} N  L/D={ld:.4f}")
 
+    # ── LBM-exact force L/D (only if force_csv is provided) ──────────────────
+    # Runs inference at the exact LBM cut-cell centers from the simulation.
+    # Summing predictions over all N_cells is unambiguous — same discretization
+    # as training, so no normalization factor needed.
+    lbm_ld_dict = None
+    if force_csv is not None:
+        logger.info(f"Loading LBM cut-cell centers from {force_csv} ...")
+        lbm_coords, lbm_normals, lbm_areas = load_lbm_points(force_csv, stl_mesh, stl_scale)
+        n_lbm = lbm_coords.shape[0]
+        logger.info(f"  {n_lbm} LBM cut-cells found")
+
+        lbm_centers_t = torch.from_numpy(lbm_coords).to(device)
+        lbm_normals_t = torch.from_numpy(lbm_normals).to(device)
+        lbm_areas_t   = torch.from_numpy(lbm_areas).to(device)
+
+        lbm_preds = run_inference(
+            stl_coordinates = stl_coordinates,
+            stl_faces       = stl_faces,
+            stl_centers     = stl_centers_t,
+            stl_normals     = stl_normals_t,
+            stl_areas       = stl_areas_t,
+            global_params   = global_params,
+            model           = model,
+            datapipe        = datapipe,
+            batch_size      = batch_size,
+            logger          = logger,
+        )
+        # lbm_preds: [N_cells, 4] = [pressure, force_x, force_y, force_z]
+
+        lbm_drag = float(lbm_preds[:, 1].sum().cpu())
+        lbm_lift = float(lbm_preds[:, -1].sum().cpu())
+        lbm_ld   = float(abs(lbm_lift) / (abs(lbm_drag) + 1e-8))
+
+        logger.info(f"LBM-exact (N={n_lbm}): Lift={lbm_lift:.6g} N  Drag={lbm_drag:.6g} N  L/D={lbm_ld:.4f}")
+
+        lbm_ld_dict = {
+            "note": f"Inference at exact LBM cut-cell centers (N={n_lbm}), direct sum",
+            "lift": lbm_lift,
+            "drag": lbm_drag,
+            "ld":   lbm_ld,
+        }
+
     # ── Write outputs ─────────────────────────────────────────────────────────
     # pressure.csv: x, y, z, pressure
     p_out = np.column_stack([centers_np, pressure_arr])
@@ -419,7 +510,7 @@ def main(cfg: DictConfig) -> None:
 
     # l_d.json
     ld_dict = {
-        "force": {
+        "force_sampled": {
             "note": f"Summed over {n_sample} area-weighted samples (matches training scale)",
             "lift": lift,
             "drag": drag,
@@ -432,6 +523,8 @@ def main(cfg: DictConfig) -> None:
             "ld":   p_ld,
         },
     }
+    if lbm_ld_dict is not None:
+        ld_dict["force_lbm"] = lbm_ld_dict
     with open(output_dir / "l_d.json", "w") as fh:
         json.dump(ld_dict, fh, indent=2)
 
