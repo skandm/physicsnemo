@@ -230,7 +230,9 @@ def main(cfg: DictConfig) -> None:
     stl_path     = Path(predict_cfg.get("stl"))
     output_dir   = Path(predict_cfg.get("output_dir"))
     stl_scale    = float(predict_cfg.get("stl_scale", 0.001))
-    batch_size   = int(predict_cfg.get("batch_size", 0))
+    # Default to surface_points_sample to match the model's training batch size.
+    # Resolved after cfg is loaded so we can reference cfg.model.surface_points_sample.
+    batch_size   = int(predict_cfg.get("batch_size", -1))
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -284,12 +286,16 @@ def main(cfg: DictConfig) -> None:
     if hasattr(cfg.data, "gpu_output"):
         overrides["gpu_output"] = cfg.data.gpu_output
 
+    # Resolve batch_size now that cfg is available.
+    if batch_size < 0:
+        batch_size = cfg.model.surface_points_sample
+
     datapipe = DoMINODataPipe(
         cfg.data.input_dir,              # path arg not used without a dataset
         phase                    = "test",
         grid_resolution          = cfg.model.interp_res,
         normalize_coordinates    = cfg.data.normalize_coordinates,
-        sampling                 = cfg.data.sampling,
+        sampling                 = False,   # we supply exact face centers; no subsampling
         sample_in_bbox           = cfg.data.sample_in_bbox,
         volume_points_sample     = cfg.model.volume_points_sample,
         surface_points_sample    = cfg.model.surface_points_sample,
