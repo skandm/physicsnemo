@@ -53,6 +53,16 @@ import json
 import math
 from pathlib import Path
 
+# Warp 1.x compatibility shim: physicsnemo uses wp.context.Device as a type
+# annotation which was removed in warp 1.0. Must come before physicsnemo imports.
+import warp as wp
+import types as _types, sys as _sys
+if not hasattr(wp, "context"):
+    _ctx = _types.ModuleType("warp.context")
+    _ctx.Device = object  # used as type annotation only, not at runtime
+    wp.context = _ctx
+    _sys.modules["warp.context"] = _ctx
+
 import hydra
 from hydra.utils import to_absolute_path
 from omegaconf import DictConfig
