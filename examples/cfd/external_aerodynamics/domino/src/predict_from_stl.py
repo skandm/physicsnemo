@@ -352,20 +352,49 @@ def main(cfg: DictConfig) -> None:
     force_y_arr  = preds[:, 2].numpy()
     force_z_arr  = preds[:, 3].numpy()
 
-    # ── L/D from predicted force fields ──────────────────────────────────────
-    drag = float(force_x_arr.sum())
-    lift = float(force_z_arr.sum())
-    ld   = float(abs(lift) / (abs(drag) + 1e-8))
-
-    logger.info(f"Force-based:  Lift={lift:.6g} N  Drag={drag:.6g} N  L/D={ld:.4f}")
-
     # ── L/D from pressure alone: F = -p * n * area ───────────────────────────
+    # Pressure is a continuous field — summing over all STL faces is a
+    # geometrically correct surface integral regardless of discretization.
     # normals_np: [N_faces, 3], areas_np: [N_faces]
     p_drag = float((-pressure_arr * normals_np[:, 0] * areas_np).sum())
     p_lift = float((-pressure_arr * normals_np[:, 2] * areas_np).sum())
     p_ld   = float(abs(p_lift) / (abs(p_drag) + 1e-8))
 
-    logger.info(f"Pressure-based: Lift={p_lift:.6g} N  Drag={p_drag:.6g} N  L/D={p_ld:.4f}")
+    logger.info(f"Pressure-based (inviscid): Lift={p_lift:.6g} N  Drag={p_drag:.6g} N  L/D={p_ld:.4f}")
+
+    # ── Force-based L/D via area-weighted sampling ────────────────────────────
+    # The model predicts force per LBM cut-cell (a discretization-dependent
+    # quantity). Summing over all 511k STL faces over-counts by ~16x relative
+    # to the ~32k training cells. To get the correct total, sample
+    # surface_points_sample points area-weighted (replicating training scale)
+    # and sum — this matches the scale the model was trained at.
+    n_sample  = cfg.model.surface_points_sample
+    probs     = (areas_np / areas_np.sum()).astype(np.float64)
+    probs    /= probs.sum()   # ensure exact normalisation
+    sample_idx = np.random.choice(len(centers_np), size=n_sample, replace=True, p=probs)
+
+    force_inf_dict = _build_inference_dict(
+        stl_coordinates = stl_coordinates,
+        stl_faces       = stl_faces,
+        stl_centers     = stl_centers_t,
+        stl_areas       = stl_areas_t,
+        global_params   = global_params,
+        surface_centers = stl_centers_t[sample_idx],
+        surface_normals = stl_normals_t[sample_idx],
+        surface_areas   = stl_areas_t[sample_idx],
+    )
+    force_prep = datapipe.process_data(force_inf_dict)
+    force_prep = {k: v.unsqueeze(0) for k, v in force_prep.items()}
+    with torch.no_grad():
+        _, force_out = model(force_prep)
+    _, force_out = datapipe.unscale_model_outputs(None, force_out)
+    # force_out: [1, n_sample, 4]
+
+    drag = float(force_out[0, :, 1].sum().cpu())
+    lift = float(force_out[0, :, -1].sum().cpu())
+    ld   = float(abs(lift) / (abs(drag) + 1e-8))
+
+    logger.info(f"Force-based  (N={n_sample} area-weighted): Lift={lift:.6g} N  Drag={drag:.6g} N  L/D={ld:.4f}")
 
     # ── Write outputs ─────────────────────────────────────────────────────────
     # pressure.csv: x, y, z, pressure
@@ -391,11 +420,13 @@ def main(cfg: DictConfig) -> None:
     # l_d.json
     ld_dict = {
         "force": {
+            "note": f"Summed over {n_sample} area-weighted samples (matches training scale)",
             "lift": lift,
             "drag": drag,
             "ld":   ld,
         },
         "pressure": {
+            "note": "Inviscid pressure integral over all STL faces; excludes viscous drag",
             "lift": p_lift,
             "drag": p_drag,
             "ld":   p_ld,
