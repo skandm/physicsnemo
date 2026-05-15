@@ -352,14 +352,20 @@ def main(cfg: DictConfig) -> None:
     force_y_arr  = preds[:, 2].numpy()
     force_z_arr  = preds[:, 3].numpy()
 
-    # ── L/D computation ───────────────────────────────────────────────────────
+    # ── L/D from predicted force fields ──────────────────────────────────────
     drag = float(force_x_arr.sum())
     lift = float(force_z_arr.sum())
     ld   = float(abs(lift) / (abs(drag) + 1e-8))
 
-    logger.info(f"Lift  = {lift:.6g} N")
-    logger.info(f"Drag  = {drag:.6g} N")
-    logger.info(f"L/D   = {ld:.4f}")
+    logger.info(f"Force-based:  Lift={lift:.6g} N  Drag={drag:.6g} N  L/D={ld:.4f}")
+
+    # ── L/D from pressure alone: F = -p * n * area ───────────────────────────
+    # normals_np: [N_faces, 3], areas_np: [N_faces]
+    p_drag = float((-pressure_arr * normals_np[:, 0] * areas_np).sum())
+    p_lift = float((-pressure_arr * normals_np[:, 2] * areas_np).sum())
+    p_ld   = float(abs(p_lift) / (abs(p_drag) + 1e-8))
+
+    logger.info(f"Pressure-based: Lift={p_lift:.6g} N  Drag={p_drag:.6g} N  L/D={p_ld:.4f}")
 
     # ── Write outputs ─────────────────────────────────────────────────────────
     # pressure.csv: x, y, z, pressure
@@ -383,14 +389,25 @@ def main(cfg: DictConfig) -> None:
     )
 
     # l_d.json
-    ld_dict = {"lift": lift, "drag": drag, "ld": ld}
+    ld_dict = {
+        "force": {
+            "lift": lift,
+            "drag": drag,
+            "ld":   ld,
+        },
+        "pressure": {
+            "lift": p_lift,
+            "drag": p_drag,
+            "ld":   p_ld,
+        },
+    }
     with open(output_dir / "l_d.json", "w") as fh:
         json.dump(ld_dict, fh, indent=2)
 
     logger.info(f"Outputs written to {output_dir}:")
     logger.info(f"  pressure.csv : {len(pressure_arr)} rows")
     logger.info(f"  force.csv    : {len(force_x_arr)} rows")
-    logger.info(f"  l_d.json     : {json.dumps(ld_dict)}")
+    logger.info(f"  l_d.json     : force L/D={ld:.4f}  pressure L/D={p_ld:.4f}")
 
 
 if __name__ == "__main__":
