@@ -44,7 +44,8 @@ def knn_impl(
     # Compute pairwise distances: (M, N)
     dists = torch.norm(points[:, None, :] - queries[None, :, :], dim=-1)
 
-    # Find top-k nearest neighbors
-    topk_dists, topk_idx = torch.topk(dists, k=k, dim=0, largest=False, sorted=True)
+    # Find top-k nearest neighbors (clamp k to available points)
+    k_eff = min(k, dists.shape[0])
+    topk_dists, topk_idx = torch.topk(dists, k=k_eff, dim=0, largest=False, sorted=True)
 
     return topk_idx.T, topk_dists.T
