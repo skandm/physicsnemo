@@ -66,6 +66,13 @@ if ST_AVAILABLE:
         register_custom_ops()
 
 else:
-    ShardTensor = None
-    ShardTensorSpec = None
-    scatter_tensor = None
+    # Provide dummy classes so isinstance(x, ShardTensor) remains valid
+    # even when torch < 2.6.0 and the real ShardTensor is unavailable.
+    class ShardTensor:  # type: ignore[no-redef]
+        pass
+
+    class ShardTensorSpec:  # type: ignore[no-redef]
+        pass
+
+    def scatter_tensor(*args, **kwargs):  # type: ignore[no-redef]
+        raise RuntimeError("ShardTensor requires torch >= 2.6.0")
