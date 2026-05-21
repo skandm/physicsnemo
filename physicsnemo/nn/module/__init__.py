@@ -75,12 +75,15 @@ from .spectral_layers import (
     SpectralConv3d,
     SpectralConv4d,
 )
-from .transformer_layers import (
-    DecoderLayer,
-    EncoderLayer,
-    FuserLayer,
-    SwinTransformer,
-)
+try:
+    from .transformer_layers import (
+        DecoderLayer,
+        EncoderLayer,
+        FuserLayer,
+        SwinTransformer,
+    )
+except Exception:
+    pass
 from .unet_layers import UNetBlock
 from .weight_fact import WeightFactLinear
 from .weight_norm import WeightNormLinear
