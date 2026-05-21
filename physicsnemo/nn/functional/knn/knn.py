@@ -140,7 +140,10 @@ class KNN(FunctionSpec):
         preferred = impls.get(preferred_name)
 
         # Use the preferred implementation when it is available.
-        impl = preferred if preferred is not None and preferred.available else None
+        # Also guard against a partially-installed cuml where the package is
+        # importable but knn_cuml itself failed to load (knn_cuml is None).
+        cuml_usable = preferred_name != "cuml" or knn_cuml is not None
+        impl = preferred if preferred is not None and preferred.available and cuml_usable else None
 
         # Fall back to torch when the preferred option is unavailable.
         if impl is None:
