@@ -56,8 +56,20 @@ if CUML_AVAILABLE and CUPY_AVAILABLE:
         points = cp.from_dlpack(points)
         queries = cp.from_dlpack(queries)
 
+        n_points = points.shape[0]
+        n_queries = queries.shape[0]
+
+        if n_points == 0:
+            # No reference points — return zero-filled tensors of expected shape
+            indices = torch.zeros((n_queries, k), dtype=torch.int64, device="cuda")
+            distance = torch.zeros((n_queries, k), dtype=points.dtype, device="cuda")
+            return indices, distance
+
+        # Clamp k to available points; pad output back to k if needed
+        k_eff = min(k, n_points)
+
         # Construct the knn:
-        knn = cuml.neighbors.NearestNeighbors(n_neighbors=k, handle=handle)
+        knn = cuml.neighbors.NearestNeighbors(n_neighbors=k_eff, handle=handle)
         # First pass partitions everything in points to make lookups fast
         knn.fit(points)
 
@@ -67,6 +79,12 @@ if CUML_AVAILABLE and CUPY_AVAILABLE:
         # convert back to pytorch:
         distance = torch.from_dlpack(distance)
         indices = torch.from_dlpack(indices)
+
+        # Pad to (n_queries, k) by repeating last neighbor when k_eff < k
+        if k_eff < k:
+            pad = k - k_eff
+            indices = torch.cat([indices, indices[:, -1:].expand(-1, pad)], dim=1)
+            distance = torch.cat([distance, distance[:, -1:].expand(-1, pad)], dim=1)
 
         # Return torch objects.
         if restore_dtype == torch.bfloat16:
