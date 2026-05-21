@@ -35,6 +35,7 @@ from .utils import (
     normalize,
     pad,
     pad_inp,
+    sample_points_on_mesh,
     shuffle_array,
     shuffle_array_without_sampling,
     standardize,
