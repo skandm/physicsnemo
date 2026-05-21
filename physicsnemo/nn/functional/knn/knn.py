@@ -20,7 +20,10 @@ import torch
 
 from physicsnemo.core.function_spec import FunctionSpec
 
-from ._cuml_impl import knn_impl as knn_cuml
+try:
+    from ._cuml_impl import knn_impl as knn_cuml
+except Exception:
+    knn_cuml = None
 from ._scipy_impl import knn_impl as knn_scipy
 from ._torch_impl import knn_impl as knn_torch
 

@@ -19,7 +19,10 @@ import torch
 from physicsnemo.core.function_spec import FunctionSpec
 
 from ._torch_impl import radius_search as radius_search_torch
-from ._warp_impl import radius_search as radius_search_warp
+try:
+    from ._warp_impl import radius_search as radius_search_warp
+except Exception:
+    radius_search_warp = None
 
 
 class RadiusSearch(FunctionSpec):
