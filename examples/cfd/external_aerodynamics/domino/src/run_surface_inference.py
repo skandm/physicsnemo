@@ -480,8 +480,6 @@ class SurfaceDoMINORunner:
             output_dir / "pressure.csv",
             np.column_stack([centers, pressure]),
             delimiter=",",
-            header="x,y,z,pressure",
-            comments="",
         )
 
         # force.csv
@@ -495,8 +493,6 @@ class SurfaceDoMINORunner:
             output_dir / "force.csv",
             force_cols,
             delimiter=",",
-            header="x,y,z,force_x,force_y,force_z",
-            comments="",
         )
 
         # results.json — per-field stats + surface-integrated totals
