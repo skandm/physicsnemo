@@ -419,28 +419,47 @@ class SurfaceDoMINORunner:
         stl_normals = cross / normals_norm.unsqueeze(1)  # unit normals
         stl_areas_f = 0.5 * normals_norm
 
-        # Batched inference — process triangle centers in _batch_size chunks to
-        # avoid CUDA OOM that occurs when feeding all centers in one forward pass.
+        # -----------------------------------------------------------------------
+        # Two-phase inference to avoid CUDA OOM while keeping correct KNN.
+        #
+        # Phase 1: run the datapipe on ALL centers at once so that
+        #   full_surface_coordinates = all n_valid centers
+        #   → each center's 11 KNN neighbors come from the full surface (correct).
+        #   The datapipe step itself fits in memory; the OOM was only in the
+        #   model forward (solutions.py cat of 499k-point embeddings).
+        #
+        # Phase 2: split the preprocessed tensors along the points dimension and
+        #   run the model forward in _batch_size chunks, then concatenate.
+        # -----------------------------------------------------------------------
         t0 = time.perf_counter()
+        full_dict = {
+            "stl_coordinates": stl_coordinates,
+            "stl_faces": stl_faces_filtered,
+            "stl_centers": stl_centers,
+            "stl_areas": stl_areas_f,
+            "global_params_values": gp_vals,
+            "global_params_reference": gp_refs,
+            "surface_mesh_centers": stl_centers,
+            "surface_normals": stl_normals,
+            "surface_areas": stl_areas_f,
+            "surface_faces": stl_faces_filtered,
+        }
+        preprocessed_all = self.datapipe.process_data(full_dict)
+        preprocessed_all = {k: v.unsqueeze(0) for k, v in preprocessed_all.items()}
+
+        # Identify which tensors have the surface-points dimension (dim=1 == n_valid)
+        # vs. fixed-size tensors (grids, geometry, global params).
+        surface_keys = {k for k, v in preprocessed_all.items() if v.shape[1] == n_valid}
+
         chunks = []
         for start in range(0, n_valid, _batch_size):
             end = min(start + _batch_size, n_valid)
-            batch_dict = {
-                "stl_coordinates": stl_coordinates,
-                "stl_faces": stl_faces_filtered,
-                "stl_centers": stl_centers[start:end],
-                "stl_areas": stl_areas_f[start:end],
-                "global_params_values": gp_vals,
-                "global_params_reference": gp_refs,
-                "surface_mesh_centers": stl_centers[start:end],
-                "surface_normals": stl_normals[start:end],
-                "surface_areas": stl_areas_f[start:end],
-                "surface_faces": stl_faces_filtered,
+            chunk = {
+                k: (v[:, start:end] if k in surface_keys else v)
+                for k, v in preprocessed_all.items()
             }
-            preprocessed = self.datapipe.process_data(batch_dict)
-            preprocessed = {k: v.unsqueeze(0) for k, v in preprocessed.items()}
             with torch.no_grad():
-                _, output_surf = self.model(preprocessed)
+                _, output_surf = self.model(chunk)
             _, chunk_preds = self.datapipe.unscale_model_outputs(None, output_surf)
             chunks.append(chunk_preds.squeeze(0).cpu())
             logger.info(f"  Centers {end}/{n_valid}")
