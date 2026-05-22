@@ -83,6 +83,7 @@ if "physicsnemo.models" not in sys.modules:
 # ---------------------------------------------------------------------------
 import argparse
 import glob
+import json
 import logging
 import re
 import time
@@ -314,7 +315,7 @@ class SurfaceDoMINORunner:
     def infer(
         self,
         stl_path,
-        output_path,
+        output_dir,
         *,
         inlet_velocity: Optional[float] = None,
         air_density: Optional[float] = None,
@@ -327,8 +328,9 @@ class SurfaceDoMINORunner:
         ----------
         stl_path : str | Path
             Input STL file.
-        output_path : str | Path
-            Output VTP file (predictions as cell data at triangle centres).
+        output_dir : str | Path
+            Directory where output files are written:
+            ``pressure.csv``, ``force.csv``, ``results.json``.
         inlet_velocity : float | None
             Override inlet velocity (m/s).  Uses config default if *None*.
         air_density : float | None
@@ -343,13 +345,14 @@ class SurfaceDoMINORunner:
         Returns
         -------
         str
-            Resolved output path.
+            Path to ``results.json``.
         """
         logger = self._logger
         cfg = self.cfg
         device = self.device
-        output_path = str(output_path)
-        logger.info(f"infer: {stl_path} → {output_path}")
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        logger.info(f"infer: {stl_path} → {output_dir}")
 
         # Build global params, optionally overriding from caller
         gp_vals = self._default_gp_vals.clone()
@@ -443,38 +446,84 @@ class SurfaceDoMINORunner:
             logger.info(f"  Centers {end}/{n_valid}")
 
         logger.info(f"  Inference took {time.perf_counter() - t0:.1f}s")
-        preds = torch.cat(chunks, dim=0).numpy()   # (n_valid, n_vars)
-        self._save_vtp(
-            stl_coordinates=stl_coordinates.cpu().numpy(),
-            stl_faces=stl_faces_filtered.cpu().numpy(),
+        preds = torch.cat(chunks, dim=0).numpy()        # (n_valid, n_vars)
+        centers_np = stl_centers.cpu().numpy()          # (n_valid, 3)
+        areas_np = stl_areas_f.cpu().numpy()            # (n_valid,)
+
+        results_path = self._save_outputs(
+            centers=centers_np,
+            areas=areas_np,
             predictions=preds,
-            output_path=output_path,
+            output_dir=output_dir,
         )
-        logger.info(f"  Saved → {output_path}")
-        return output_path
+        logger.info(f"  Saved → {output_dir}")
+        return results_path
 
-    def _save_vtp(
+    def _save_outputs(
         self,
-        stl_coordinates: np.ndarray,
-        stl_faces: np.ndarray,
+        centers: np.ndarray,
+        areas: np.ndarray,
         predictions: np.ndarray,
-        output_path: str,
-    ) -> None:
-        """Write VTP: surface bbox-filtered mesh + predictions as cell data."""
-        try:
-            import pyvista as pv
-        except ImportError:
-            raise ImportError("pyvista is required: pip install pyvista")
+        output_dir: Path,
+    ) -> str:
+        """Write pressure.csv, force.csv, and results.json to output_dir.
 
-        n_tri = stl_faces.shape[0] // 3
-        faces_reshaped = stl_faces.reshape(n_tri, 3)
-        padding = np.full((n_tri, 1), 3, dtype=np.int32)
-        faces_pv = np.hstack([padding, faces_reshaped.astype(np.int32)]).flatten()
+        pressure.csv  — x, y, z, pressure  (one row per triangle centre)
+        force.csv     — x, y, z, force_x, force_y, force_z
+        results.json  — aggregate stats + file paths
+        """
+        ch = {name: i for i, name in enumerate(self.channel_names)}
 
-        mesh = pv.PolyData(stl_coordinates.astype(np.float64), faces_pv)
-        for i, name in enumerate(self.channel_names):
-            mesh.cell_data[name] = predictions[:, i]
-        mesh.save(output_path)
+        # pressure.csv
+        pressure = predictions[:, ch["pressure"]]
+        np.savetxt(
+            output_dir / "pressure.csv",
+            np.column_stack([centers, pressure]),
+            delimiter=",",
+            header="x,y,z,pressure",
+            comments="",
+        )
+
+        # force.csv
+        force_cols = np.column_stack([
+            centers,
+            predictions[:, ch["force_x"]],
+            predictions[:, ch["force_y"]],
+            predictions[:, ch["force_z"]],
+        ])
+        np.savetxt(
+            output_dir / "force.csv",
+            force_cols,
+            delimiter=",",
+            header="x,y,z,force_x,force_y,force_z",
+            comments="",
+        )
+
+        # results.json — per-field stats + surface-integrated totals
+        total_force_x = float((predictions[:, ch["force_x"]] * areas).sum())
+        total_force_y = float((predictions[:, ch["force_y"]] * areas).sum())
+        total_force_z = float((predictions[:, ch["force_z"]] * areas).sum())
+
+        results = {
+            "n_triangles": int(len(pressure)),
+            "pressure": {
+                "min": float(pressure.min()),
+                "max": float(pressure.max()),
+                "mean": float(pressure.mean()),
+            },
+            "integrated_force": {
+                "force_x": total_force_x,
+                "force_y": total_force_y,
+                "force_z": total_force_z,
+            },
+            "files": {
+                "pressure": "pressure.csv",
+                "force": "force.csv",
+            },
+        }
+        results_path = output_dir / "results.json"
+        results_path.write_text(json.dumps(results, indent=2))
+        return str(results_path)
 
 
 # ---------------------------------------------------------------------------
@@ -487,7 +536,7 @@ def _parse_args():
     )
     p.add_argument("--stl",        required=True,  help="Input STL file")
     p.add_argument("--checkpoint", required=True,  help="Directory with .mdlus checkpoint files")
-    p.add_argument("--output",     default="predicted_surface.vtp", help="Output VTP file")
+    p.add_argument("--output_dir", default="output", help="Directory for pressure.csv, force.csv, results.json")
     p.add_argument("--config",     default=None,   help="Path to config.yaml (auto-detected if omitted)")
     p.add_argument("--scaling",    default=None,   help="Path to scaling_factors.pkl (auto-detected if omitted)")
     p.add_argument("--stl_scale",  type=float, default=1.0, help="Coordinate scale (e.g. 0.001 for mm→m)")
@@ -506,7 +555,7 @@ if __name__ == "__main__":
     )
     runner.infer(
         stl_path=args.stl,
-        output_path=args.output,
+        output_dir=args.output_dir,
         inlet_velocity=args.inlet_velocity,
         air_density=args.air_density,
         batch_size=args.batch_size,
