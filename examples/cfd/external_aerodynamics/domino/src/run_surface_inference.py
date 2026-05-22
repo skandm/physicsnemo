@@ -404,28 +404,46 @@ class SurfaceDoMINORunner:
 
         _batch_size = batch_size or cfg.model.surface_points_sample
 
-        # Run inference on the filtered mesh
+        # Compute geometry for the filtered triangles (needed for batched inference)
+        n_valid = stl_faces_filtered.shape[0] // 3
+        faces_2d = stl_faces_filtered.reshape(n_valid, 3)
+        tri_verts = stl_coordinates[faces_2d]            # (n_valid, 3, 3)
+        stl_centers = tri_verts.mean(dim=1)              # (n_valid, 3)
+        d1 = tri_verts[:, 1] - tri_verts[:, 0]
+        d2 = tri_verts[:, 2] - tri_verts[:, 0]
+        cross = torch.linalg.cross(d1, d2, dim=1)
+        normals_norm = torch.linalg.norm(cross, dim=1)
+        stl_normals = cross / normals_norm.unsqueeze(1)  # unit normals
+        stl_areas_f = 0.5 * normals_norm
+
+        # Batched inference — process triangle centers in _batch_size chunks to
+        # avoid CUDA OOM that occurs when feeding all centers in one forward pass.
         t0 = time.perf_counter()
-        stl_center_results, _, _ = inference_on_single_stl(
-            stl_coordinates=stl_coordinates,
-            stl_faces=stl_faces_filtered,
-            global_params_values=gp_vals,
-            global_params_reference=gp_refs,
-            model=self.model,
-            datapipe=self.datapipe,
-            batch_size=_batch_size,
-            total_points=_batch_size,
-            logger=logger,
-        )
+        chunks = []
+        for start in range(0, n_valid, _batch_size):
+            end = min(start + _batch_size, n_valid)
+            batch_dict = {
+                "stl_coordinates": stl_coordinates,
+                "stl_faces": stl_faces_filtered,
+                "stl_centers": stl_centers[start:end],
+                "stl_areas": stl_areas_f[start:end],
+                "global_params_values": gp_vals,
+                "global_params_reference": gp_refs,
+                "surface_mesh_centers": stl_centers[start:end],
+                "surface_normals": stl_normals[start:end],
+                "surface_areas": stl_areas_f[start:end],
+                "surface_faces": stl_faces_filtered,
+            }
+            preprocessed = self.datapipe.process_data(batch_dict)
+            preprocessed = {k: v.unsqueeze(0) for k, v in preprocessed.items()}
+            with torch.no_grad():
+                _, output_surf = self.model(preprocessed)
+            _, chunk_preds = self.datapipe.unscale_model_outputs(None, output_surf)
+            chunks.append(chunk_preds.squeeze(0).cpu())
+            logger.info(f"  Centers {end}/{n_valid}")
+
         logger.info(f"  Inference took {time.perf_counter() - t0:.1f}s")
-
-        if stl_center_results is None:
-            raise RuntimeError(
-                "Surface inference returned no results — "
-                "check that model_type is 'surface' or 'combined' in config."
-            )
-
-        preds = stl_center_results.squeeze(0).cpu().numpy()   # (n_valid, n_vars)
+        preds = torch.cat(chunks, dim=0).numpy()   # (n_valid, n_vars)
         self._save_vtp(
             stl_coordinates=stl_coordinates.cpu().numpy(),
             stl_faces=stl_faces_filtered.cpu().numpy(),
