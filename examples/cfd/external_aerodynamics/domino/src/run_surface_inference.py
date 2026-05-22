@@ -140,7 +140,7 @@ def build_surface_datapipe(
         grid_resolution=cfg.model.interp_res,
         normalize_coordinates=cfg.data.normalize_coordinates,
         sampling=False,
-        sample_in_bbox=cfg.data.sample_in_bbox,
+        sample_in_bbox=False,  # we pre-filter to the surface bbox ourselves
         volume_points_sample=cfg.model.volume_points_sample,
         surface_points_sample=cfg.model.surface_points_sample,
         geom_points_sample=cfg.model.geom_points_sample,
@@ -364,19 +364,51 @@ class SurfaceDoMINORunner:
         stl_coordinates, stl_faces = load_stl_to_tensors(str(stl_path), device)
         if stl_scale != 1.0:
             stl_coordinates = stl_coordinates * stl_scale
+        n_tri_total = stl_faces.shape[0] // 3
         logger.info(
-            f"  STL: {stl_coordinates.shape[0]} vertices, "
-            f"{stl_faces.shape[0] // 3} triangles"
+            f"  STL: {stl_coordinates.shape[0]} vertices, {n_tri_total} triangles"
+        )
+
+        # -----------------------------------------------------------------------
+        # Pre-filter faces to the surface bounding box before calling the model.
+        #
+        # For surface inference the right domain is bounding_box_surface, not
+        # the volume bbox.  We filter here so the datapipe receives only valid
+        # triangles (sample_in_bbox is forced False in build_surface_datapipe).
+        # -----------------------------------------------------------------------
+        faces_2d = stl_faces.reshape(n_tri_total, 3)         # (n_tri, 3)
+        tri_verts = stl_coordinates[faces_2d]                 # (n_tri, 3, 3)
+        stl_centers_all = tri_verts.mean(dim=1)               # (n_tri, 3)
+        d1 = tri_verts[:, 1] - tri_verts[:, 0]
+        d2 = tri_verts[:, 2] - tri_verts[:, 0]
+        stl_areas_all = 0.5 * torch.linalg.norm(
+            torch.linalg.cross(d1, d2, dim=1), dim=1
+        )
+
+        valid_mask = stl_areas_all > 0
+
+        if self.datapipe.config.bounding_box_dims_surf is not None:
+            s_max = self.datapipe.config.bounding_box_dims_surf[0]
+            s_min = self.datapipe.config.bounding_box_dims_surf[1]
+            in_surf_bbox = (
+                (stl_centers_all > s_min).all(dim=-1)
+                & (stl_centers_all < s_max).all(dim=-1)
+            )
+            valid_mask = valid_mask & in_surf_bbox
+
+        stl_faces_filtered = faces_2d[valid_mask].flatten()
+        logger.info(
+            f"  Triangles within surface bbox: "
+            f"{valid_mask.sum().item()} / {n_tri_total}"
         )
 
         _batch_size = batch_size or cfg.model.surface_points_sample
 
-        # Run inference — one warm-up batch of random surface samples,
-        # then a final pass at every STL triangle centre.
+        # Run inference on the filtered mesh
         t0 = time.perf_counter()
         stl_center_results, _, _ = inference_on_single_stl(
             stl_coordinates=stl_coordinates,
-            stl_faces=stl_faces,
+            stl_faces=stl_faces_filtered,
             global_params_values=gp_vals,
             global_params_reference=gp_refs,
             model=self.model,
@@ -393,45 +425,10 @@ class SurfaceDoMINORunner:
                 "check that model_type is 'surface' or 'combined' in config."
             )
 
-        # -----------------------------------------------------------------------
-        # Replicate the triangle filtering done by datapipe.process_surface so
-        # that `valid_tri_idx` exactly matches the rows in stl_center_results.
-        #
-        # process_surface applies two filters:
-        #   1. Remove degenerate triangles (area == 0)
-        #   2. If sample_in_bbox, remove centers outside the VOLUME bounding box
-        # -----------------------------------------------------------------------
-        tri_verts = stl_coordinates[stl_faces.reshape(-1, 3)]  # (n_tri, 3, 3)
-        stl_centers_all = tri_verts.mean(dim=1)                # (n_tri, 3)
-        d1 = tri_verts[:, 1] - tri_verts[:, 0]
-        d2 = tri_verts[:, 2] - tri_verts[:, 0]
-        stl_areas_all = 0.5 * torch.linalg.norm(
-            torch.linalg.cross(d1, d2, dim=1), dim=1
-        )  # (n_tri,)
-
-        valid_mask = stl_areas_all > 0
-
-        if self.cfg.data.sample_in_bbox:
-            c_max = self.datapipe.config.bounding_box_dims[0]
-            c_min = self.datapipe.config.bounding_box_dims[1]
-            in_bbox = (
-                (stl_centers_all > c_min).all(dim=-1)
-                & (stl_centers_all < c_max).all(dim=-1)
-            )
-            valid_mask = valid_mask & in_bbox
-
-        valid_tri_idx = valid_mask.nonzero(as_tuple=True)[0].cpu().numpy()
-
         preds = stl_center_results.squeeze(0).cpu().numpy()   # (n_valid, n_vars)
-        logger.info(
-            f"  Triangles total: {stl_faces.shape[0] // 3}, "
-            f"in-bounds: {len(valid_tri_idx)}, predictions: {preds.shape[0]}"
-        )
-
         self._save_vtp(
             stl_coordinates=stl_coordinates.cpu().numpy(),
-            stl_faces=stl_faces.cpu().numpy(),
-            valid_tri_idx=valid_tri_idx,
+            stl_faces=stl_faces_filtered.cpu().numpy(),
             predictions=preds,
             output_path=output_path,
         )
@@ -442,16 +439,10 @@ class SurfaceDoMINORunner:
         self,
         stl_coordinates: np.ndarray,
         stl_faces: np.ndarray,
-        valid_tri_idx: np.ndarray,
         predictions: np.ndarray,
         output_path: str,
     ) -> None:
-        """Write VTP: filtered surface mesh + predictions as cell data.
-
-        Only the triangles in `valid_tri_idx` (those that passed the datapipe's
-        size and bounding-box filters) are written; predictions are attached as
-        cell data on exactly those cells.
-        """
+        """Write VTP: surface bbox-filtered mesh + predictions as cell data."""
         try:
             import pyvista as pv
         except ImportError:
@@ -462,11 +453,7 @@ class SurfaceDoMINORunner:
         padding = np.full((n_tri, 1), 3, dtype=np.int32)
         faces_pv = np.hstack([padding, faces_reshaped.astype(np.int32)]).flatten()
 
-        full_mesh = pv.PolyData(stl_coordinates.astype(np.float64), faces_pv)
-
-        # Extract only the cells that the datapipe kept (size > 0 + bbox filter)
-        mesh = full_mesh.extract_cells(valid_tri_idx)
-
+        mesh = pv.PolyData(stl_coordinates.astype(np.float64), faces_pv)
         for i, name in enumerate(self.channel_names):
             mesh.cell_data[name] = predictions[:, i]
         mesh.save(output_path)
