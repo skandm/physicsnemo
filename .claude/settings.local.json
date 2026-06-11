@@ -14,7 +14,10 @@
       "WebFetch(domain:discuss.pytorch.org)",
       "WebSearch",
       "WebFetch(domain:docs.nvidia.com)",
-      "WebFetch(domain:medium.com)"
+      "WebFetch(domain:medium.com)",
+      "Bash(tail:*)",
+      "Bash(cd C:/cpp/ntopnemo && python -m pytest tests/ -v 2>&1)",
+      "Bash(cd C:/cpp/ntopnemo && python -c \"\nimport sys\nsys.argv = ['train_sdf.py']\nfrom imino.config import IMINOConfig\nfrom imino.model import IMINO\nfrom ntop.mock_api import Sphere\nimport torch, torch.nn.functional as F, random\n\n# mini run: 50 iters instead of 2000\nfrom scripts.train_sdf import generate_random_body\n\ncfg = IMINOConfig\\(\\)\ncfg.num_iterations = 50\nmodel = IMINO\\(cfg\\)\noptimizer = torch.optim.Adam\\(model.parameters\\(\\), lr=cfg.lr\\)\nbbox_min = torch.tensor\\(cfg.bbox_min\\)\nbbox_max = torch.tensor\\(cfg.bbox_max\\)\n\nlosses = []\nfor i in range\\(cfg.num_iterations\\):\n    body = generate_random_body\\(\\)\n    grid = model.stage1.build_grid\\(body, bbox_min, bbox_max, cfg.resolution\\)\n    query_pts = torch.rand\\(1, cfg.num_query_points, 3\\) * \\(bbox_max - bbox_min\\) + bbox_min\n    target = body.evaluate_field\\(query_pts\\).unsqueeze\\(-1\\)\n    predicted = model\\(grid, query_pts, bbox_min, bbox_max\\)\n    loss = F.mse_loss\\(predicted, target\\)\n    optimizer.zero_grad\\(\\)\n    loss.backward\\(\\)\n    optimizer.step\\(\\)\n    losses.append\\(loss.item\\(\\)\\)\n\nprint\\(f'iter 0  loss: {losses[0]:.4f}'\\)\nprint\\(f'iter 49 loss: {losses[-1]:.4f}'\\)\nprint\\('loss decreased:', losses[-1] < losses[0]\\)\n\" 2>&1)"
     ]
   }
 }

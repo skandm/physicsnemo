@@ -8,27 +8,45 @@ and running inference on new geometries.
 ## Pipeline Overview
 
 ```
-Raw CFD data                    Zarr dataset                   Trained model
-                                (one .zarr per case)
-       │                               │                              │
-       ▼                               ▼                              ▼
-[VTI-based]          validate_zarr.py                          run_inference.py
-convert_to_zarr.py   inspect_zarr.py                           (new STL → VTI)
-                     check_coords.py
-[CSV-based]          split_zarr.py  ──►  zarr_val/  (val cases moved out)
-csv_to_zarr.py                      └── zarr/      (train, unchanged)
-                                                  │
-[Combined: run both                               ▼
-scripts — they write          shuffle_zarr_volume.py  ──►  zarr_shuffled/
-to the same .zarr]            (recommended for volume_sample_from_disk: true)
-                                                  │
-                                                  ▼
-                                         check_bounds.py  ──►  config.yaml
-                                         check_areas.py   ──►  config.yaml
-                                         compute_statistics.py ──►  scaling_factors.pkl
-                                                  │
-                                                  ▼
-                                             train.py
+ Volume path (STL + VTI)           Surface path (STL + CSVs)
+         │                          pressure/velocity/force CSVs
+         ▼                                    │
+  convert_to_zarr.py                          ▼
+         │                           csv_to_zarr.py
+         │  (append to same .zarr             │
+         │   for combined training)           │
+         └────────────────┬───────────────────┘
+                          │  Zarr dataset (one .zarr per case)
+                          │
+          ┌───────────────┴──────────────────────────┐
+          │ Volume / combined                         │ Surface only
+          ▼                                           ▼
+   validate_zarr.py                           inspect_zarr.py
+   inspect_zarr.py                            check_coords.py
+   check_coords.py
+          │                                           │
+          └───────────────┬──────────────────────────┘
+                          │
+                          ▼
+                    split_zarr.py  ──►  zarr_val/  (val cases moved out)
+                                    └── zarr/      (train, unchanged)
+                          │
+          ┌───────────────┴──────────────────────────┐
+          │ Volume / combined only                    │ Surface only
+          ▼                                           │ (skip — no volume
+   shuffle_zarr_volume.py  ──►  zarr_shuffled/       │  shuffle needed)
+   (recommended for volume_sample_from_disk: true)   │
+          │                                           │
+          └───────────────┬──────────────────────────┘
+                          │
+                          ▼
+                   check_bounds.py  ──►  config.yaml
+                   check_areas.py   ──►  config.yaml
+                   compute_statistics.py ──►  scaling_factors.pkl
+                          │
+                          ▼
+                      train.py  ──►  Trained model  ──►  run_inference.py
+                                                         (new STL → predicted fields)
 ```
 
 ---
